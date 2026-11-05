@@ -132,6 +132,17 @@ async function sync(statusEl) {
   const [ids, names] = await Promise.all([logTypes(), tornItems()]);
   const basic = await torn("/user/", { selections: "basic" });
   Object.assign(basic, await torn("/user/", { selections: "money" }));
+  // Stock market holdings, valued at today's share price. Optional: needs the "stocks" permission (user + torn).
+  let stocks = null;
+  try {
+    const [mine, market] = await Promise.all([torn("/user/", { selections: "stocks" }), torn("/torn/", { selections: "stocks" })]);
+    const list = Object.values(mine.stocks || {}).map(h => {
+      const m = (market.stocks || {})[h.stock_id] || {};
+      const shares = Number(h.total_shares) || 0, price = Number(m.current_price) || 0;
+      return { id: +h.stock_id, acronym: m.acronym || "", name: m.name || `Stock #${h.stock_id}`, shares, price, value: Math.round(shares * price) };
+    }).filter(h => h.shares > 0);
+    stocks = { list, value: list.reduce((a, h) => a + h.value, 0) };
+  } catch (e) { console.warn("stocks", e); stocks = { error: e.message }; }
   const me = +basic.player_id;
   const { data: prof } = await sb.from("profiles").select("*").eq("user_id", session.user.id).maybeSingle();
   const trackStart = Number(state.settings.tracking_start) || (nowTs() - 3 * 86400);
@@ -193,8 +204,14 @@ async function sync(statusEl) {
   }
 
   const newest = Math.max(prof?.last_log_ts || 0, ...[...all.values()].map(e => e.timestamp), from);
-  await sb.from("profiles").upsert({ user_id: session.user.id, email: session.user.email, torn_id: me, torn_name: basic.name,
-    money: Number(basic.money_onhand) || 0, last_log_ts: newest, synced_ts: nowTs() });
+  const profRow = { user_id: session.user.id, email: session.user.email, torn_id: me, torn_name: basic.name,
+    money: Number(basic.money_onhand) || 0, last_log_ts: newest, synced_ts: nowTs() };
+  if (stocks && !stocks.error) Object.assign(profRow, { stocks_value: stocks.value, stocks: stocks.list, stocks_ts: nowTs() });
+  let { error: pErr } = await sb.from("profiles").upsert(profRow);
+  if (pErr && /stocks/.test(pErr.message)) { // database not updated yet: save without stocks
+    const { stocks_value, stocks: _s, stocks_ts, ...rest } = profRow; ({ error: pErr } = await sb.from("profiles").upsert(rest));
+  }
+  if (pErr) throw new Error("Saving profile: " + pErr.message);
 
   say("Checking lots…");
   await loadAll();
@@ -341,6 +358,22 @@ function todayStr() {
 }
 const fmtTime = ts => new Date(ts * 1000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: LS.get("cf_tz") === "local" ? undefined : "UTC" });
 
+function stocksPanel(net) {
+  const ps = state.profiles.filter(p => p.stocks_value != null);
+  const total = ps.reduce((a, p) => a + Number(p.stocks_value || 0), 0);
+  const last = ps.length ? Math.max(...ps.map(p => Number(p.stocks_ts) || 0)) : 0;
+  const tip = p => (p.stocks || []).map(h => `${h.acronym || h.name}: ${Number(h.shares).toLocaleString("en-US")} sh · ${money(h.value)}`).join("\n");
+  return `<div class="panel pad stocks">
+    <div><span class="sub">STOCKS BY ACCOUNT</span>
+      ${ps.length ? ps.map(p => `<div class="acct" title="${esc(tip(p))}"><b>${esc(p.torn_name || p.email)}</b><span class="big" style="font-size:22px">${money(p.stocks_value)}</span></div>`).join("")
+        : `<p class="note">No stock data yet. Add the <b>stocks</b> permission (User and Torn) to your key, then sync.</p>`}</div>
+    <div><span class="sub">STOCKS COMBINED</span><div class="big">${money(total)}</div>
+      <div class="sub">${last ? "share prices as of " + new Date(last * 1000).toLocaleString("en-GB", { dateStyle: "short", timeStyle: "short" }) : ""}</div></div>
+    <div><span class="sub">NET TODAY + STOCKS</span><div class="big ${net + total < 0 ? "neg" : "pos"}">${money(net + total)}</div>
+      <div class="sub">${money(net)} today + ${money(total)} in stocks</div></div>
+  </div>`;
+}
+
 function viewTill() {
   tillDay = tillDay || todayStr();
   const { from, to } = dayRange(tillDay);
@@ -382,6 +415,7 @@ function viewTill() {
       <div><span class="sub">NET TODAY (sales − losses)</span><div class="big ${net < 0 ? "neg" : "pos"}">${money(net)}</div></div>
       <p class="note">Item Market amounts are after the 5% fee. Supplier shares are settled per lot, on the Payouts tab.</p>
     </div>
+    ${stocksPanel(net)}
     <section><h3>By item</h3><div class="panel tbl"><table>
       <thead><tr><th>Item</th><th>Where</th><th class="n">Qty</th><th class="n">Avg</th><th class="n">Total</th></tr></thead>
       <tbody>${agg.size ? [...agg.values()].sort((a, b) => b.net - a.net).map(a =>
@@ -621,7 +655,7 @@ function viewSettings() {
     <div class="grid2">
       <form class="panel card" id="keyForm">
         <h2>Your Torn API key</h2>
-        <p class="note">Use a <b>Custom</b> key with: basic, log, money, inventory, bazaar, itemmarket (User) and items, logtypes (Torn). It stays in this browser only and is sent only to api.torn.com.</p>
+        <p class="note">Use a <b>Custom</b> key with: basic, log, money, inventory, bazaar, itemmarket, stocks (User) and items, logtypes, stocks (Torn). It stays in this browser only and is sent only to api.torn.com.</p>
         <label for="tkey">Key<input id="tkey" type="password" autocomplete="off" value="${esc(tornKey())}" placeholder="paste your key"></label>
         <div class="row"><button class="go" type="submit">Save key</button><button class="ghost" id="forgetKey" type="button">Remove from this browser</button></div>
         <span class="status" id="keyStatus"></span>

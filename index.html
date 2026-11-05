@@ -97,6 +97,9 @@ td.t{font-family:var(--f-mono)}
 details summary{cursor:pointer;color:var(--muted);font-size:13px}
 pre{white-space:pre-wrap;word-break:break-all;font:12px var(--f-mono);background:#0e0c0d;padding:10px;border:1px solid var(--line);max-height:300px;overflow:auto}
 .rentbig{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:14px}
+.stocks{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:18px}
+.stocks>div{display:grid;gap:6px;align-content:start;min-width:0}
+.stocks .acct{display:flex;justify-content:space-between;align-items:baseline;gap:10px;border-bottom:1px dashed var(--line);padding-bottom:4px}
 .badge{font:600 12px var(--f-mono);padding:4px 10px;border-radius:3px;text-transform:uppercase;letter-spacing:.08em}
 .badge.good{background:rgba(74,222,128,.15);color:var(--good)} .badge.bad{background:rgba(255,107,107,.15);color:var(--bad)}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
@@ -107,6 +110,6 @@ pre{white-space:pre-wrap;word-break:break-all;font:12px var(--f-mono);background
   <div class="panel login" id="loading"><p class="status">Loading…</p></div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js"></script>
-<script src="app.js?v=bz1"></script>
+<script src="app.js?v=st1"></script>
 </body>
 </html>

@@ -120,3 +120,8 @@ on conflict (key) do nothing;
 
 -- Added later: bazaar listing prices (safe to run on an existing database)
 alter table public.stock add column if not exists bazaar_price bigint default 0;
+
+-- Added later: stock market holdings per account
+alter table public.profiles add column if not exists stocks_value bigint;
+alter table public.profiles add column if not exists stocks jsonb;
+alter table public.profiles add column if not exists stocks_ts bigint default 0;
