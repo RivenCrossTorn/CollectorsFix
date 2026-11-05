@@ -103,6 +103,27 @@ pre{white-space:pre-wrap;word-break:break-all;font:12px var(--f-mono);background
 .stocks{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:18px}
 .stocks>div{display:grid;gap:6px;align-content:start;min-width:0}
 .stocks .acct{display:flex;justify-content:space-between;align-items:baseline;gap:10px;border-bottom:1px dashed var(--line);padding-bottom:4px}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:3px;overflow:hidden;align-self:end}
+.segbtn{display:flex;align-items:center;gap:6px;padding:9px 12px;cursor:pointer;text-transform:none;letter-spacing:0;font:600 13px var(--f-body);color:var(--muted)}
+.segbtn input{position:absolute;opacity:0;pointer-events:none}
+.segbtn.in:has(input:checked){background:rgba(74,222,128,.15);color:var(--good)}
+.segbtn.out:has(input:checked){background:rgba(255,107,107,.15);color:var(--bad)}
+.segbtn:has(input:focus-visible){outline:2px solid var(--teal);outline-offset:-2px}
+.statement{overflow:hidden}
+.sday{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:10px 16px;background:var(--panel2);border-bottom:1px solid var(--line);font:600 12px var(--f-mono);text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}
+.sline{display:grid;grid-template-columns:28px minmax(0,1fr) auto auto 34px;gap:12px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--line)}
+.sline:last-child{border-bottom:0}
+.sline .arrow{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;font-weight:700}
+.sline.in .arrow{background:rgba(74,222,128,.15);color:var(--good)}
+.sline.out .arrow{background:rgba(255,107,107,.15);color:var(--bad)}
+.sline.internal{opacity:.55}
+.swhat{display:grid;gap:2px;min-width:0}
+.swhat b{font-weight:600;overflow-wrap:anywhere}
+.tag{font:600 11px var(--f-mono);padding:3px 8px;border-radius:2px;background:#120f10;border:1px solid var(--line);color:var(--muted);text-transform:uppercase;letter-spacing:.06em;white-space:nowrap}
+.samt{font:600 15px var(--f-mono);font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+.sline.in .samt{color:var(--good)} .sline.out .samt{color:var(--bad)}
+button.danger{border-color:var(--bad);color:var(--bad)}
+@media (max-width:640px){.sline{grid-template-columns:28px minmax(0,1fr) auto;row-gap:4px}.sline .tag{grid-column:2;justify-self:start}.sline .samt{grid-column:3;grid-row:1}.sline button,.sline .spacer{grid-column:3;grid-row:2;justify-self:end}}
 .badge{font:600 12px var(--f-mono);padding:4px 10px;border-radius:3px;text-transform:uppercase;letter-spacing:.08em}
 .badge.good{background:rgba(74,222,128,.15);color:var(--good)} .badge.bad{background:rgba(255,107,107,.15);color:var(--bad)}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
@@ -113,6 +134,6 @@ pre{white-space:pre-wrap;word-break:break-all;font:12px var(--f-mono);background
   <div class="panel login" id="loading"><p class="status">Loading…</p></div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js"></script>
-<script src="app.js?v=tot1"></script>
+<script src="app.js?v=money1"></script>
 </body>
 </html>

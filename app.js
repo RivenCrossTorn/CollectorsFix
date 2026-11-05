@@ -57,7 +57,7 @@ async function tornItems() {
 }
 
 async function logTypes() {
-  try { const c = JSON.parse(LS.get("cf_logtypes3") || "null"); if (c) return c; } catch {}
+  try { const c = JSON.parse(LS.get("cf_logtypes4") || "null"); if (c) return c; } catch {}
   let list = [];
   try {
     const j = await torn("/v2/torn/logtypes");
@@ -67,12 +67,15 @@ async function logTypes() {
   const pick = re => list.filter(t => re.test(t.title || "")).map(t => +t.id);
   const ids = {
     bazaar: pick(/^bazaar sell$/i), im: pick(/^item market sell$/i),
-    receive: pick(/^item receive$/i), mug: pick(/mug/i)
+    receive: pick(/^item receive$/i), mug: pick(/mug/i),
+    im_buy: pick(/^item market buy$/i), bazaar_buy: pick(/^bazaar buy$/i),
+    abroad_buy: pick(/abroad.*buy|buy.*abroad|travel.*buy/i), shop_buy: pick(/shop buy/i).filter(id => !list.find(t => +t.id === id && /abroad/i.test(t.title))),
+    money_send: pick(/^money send$/i), money_receive: pick(/^money receive$/i)
   };
   if (!ids.bazaar.length) ids.bazaar = [1221];
   if (!ids.im.length) ids.im = [1113];
   if (!ids.receive.length) ids.receive = [4103];
-  if (list.length) LS.set("cf_logtypes3", JSON.stringify(ids));
+  if (list.length) LS.set("cf_logtypes4", JSON.stringify(ids));
   return ids;
 }
 
@@ -89,6 +92,7 @@ function parseLog(hash, e, ids, me, names) {
   else if (ids.im.includes(e.log)) kind = "im_sale";
   else if (ids.receive.includes(e.log)) kind = "receive";
   else if (ids.mug.includes(e.log) || /mug/i.test(e.title || "")) kind = "mug";
+  else for (const k of ["im_buy", "bazaar_buy", "abroad_buy", "shop_buy", "money_send", "money_receive"]) if ((ids[k] || []).includes(e.log)) { kind = k; break; }
   if (!kind) return rows;
   const base = { account_id: me, kind, ts: e.timestamp, raw: e };
 
@@ -102,6 +106,14 @@ function parseLog(hash, e, ids, me, names) {
     const amt = Number(d.money_mugged ?? d.money_lost ?? d.mugged ?? d.money ?? d.amount ?? d.value ?? 0);
     if (!victim || !amt) return rows;
     rows.push({ ...base, id: `${hash}:0`, qty: 0, gross: amt, net: amt, fee: 0, counterparty_id: attacker != null ? +attacker : null });
+    return rows;
+  }
+
+  if (kind === "money_send" || kind === "money_receive") {
+    const amt = Number(d.money ?? d.amount ?? d.value ?? d.cash ?? 0);
+    const other = kind === "money_send" ? (d.receiver ?? d.receiver_id ?? d.target ?? d.user) : (d.sender ?? d.sender_id ?? d.user ?? d.from);
+    if (!amt) return rows;
+    rows.push({ ...base, id: `${hash}:0`, qty: 0, gross: amt, net: amt, fee: 0, counterparty_id: other != null ? +other : null });
     return rows;
   }
 
@@ -149,12 +161,14 @@ async function sync(statusEl) {
   const { data: prof } = await sb.from("profiles").select("*").eq("user_id", session.user.id).maybeSingle();
   const trackStart = Number(state.settings.tracking_start) || (nowTs() - 3 * 86400);
   let from = Math.max(trackStart, (prof?.torn_id === me ? prof.last_log_ts : 0) - 120);
+  const backfillKey = "cf_backfill_money_" + me;
+  if (!LS.get(backfillKey)) from = trackStart; // first sync since the Money tab: read purchases and transfers from the start
   const to = nowTs();
 
   // logs, newest first, 100 per page
   const all = new Map();
   let upper = to;
-  const typeList = [...ids.bazaar, ...ids.im, ...ids.receive, ...ids.mug].join(",");
+  const typeList = Object.values(ids).flat().join(",");
   for (let page = 0; page < 40; page++) {
     const j = await torn("/user/", { selections: "log", log: typeList, from, to: upper });
     const entries = Object.entries(j.log || {});
@@ -168,9 +182,10 @@ async function sync(statusEl) {
   for (const [h, e] of all) rows.push(...parseLog(h, e, ids, me, names));
   for (let i = 0; i < rows.length; i += 200) {
     const { error } = await sb.from("events").upsert(rows.slice(i, i + 200), { onConflict: "id", ignoreDuplicates: true });
-    if (error) throw new Error("Saving events: " + error.message);
+    if (error) throw new Error("Saving events: " + error.message + (/kind_check/.test(error.message) ? " — run the new SQL for the Money tab in Supabase" : ""));
   }
 
+  LS.set(backfillKey, "1");
   // stock snapshot: bazaar + item market + inventory for the items we care about
   say("Counting stock…");
   const stock = new Map();
@@ -292,16 +307,20 @@ async function closeLots() {
 /* ---------------- Data ---------------- */
 async function loadAll() {
   const trackStart = 0;
-  const [sup, lots, shares, profiles, stock, events, settings] = await Promise.all([
+  const [sup, lots, shares, profiles, stock, events, settings, manual, rentLog] = await Promise.all([
     sb.from("suppliers").select("*").order("name"),
     sb.from("lots").select("*").order("closed_ts", { ascending: false }).limit(500),
     sb.from("lot_shares").select("*").order("id", { ascending: false }).limit(1000),
     sb.from("profiles").select("*"),
     sb.from("stock").select("*"),
     sb.from("events").select("id,account_id,kind,ts,item_id,item_name,qty,gross,fee,net,counterparty_id").gte("ts", trackStart).order("ts", { ascending: false }).limit(10000),
-    sb.from("settings").select("*")
+    sb.from("settings").select("*"),
+    sb.from("money_entries").select("*").order("ts", { ascending: false }).limit(5000),
+    sb.from("rent_log").select("*").order("paid_at", { ascending: false }).limit(500)
   ]);
   const err = [sup, lots, shares, profiles, stock, events, settings].find(r => r.error);
+  state.manual = manual.error ? null : manual.data;   // null = table not created yet
+  state.rentLog = rentLog.error ? [] : rentLog.data;
   if (err) throw new Error(err.error.message + " — did you run setup.sql in Supabase?");
   state.suppliers = sup.data; state.lots = lots.data; state.shares = shares.data; state.profiles = profiles.data;
   state.stock = stock.data; state.events = events.data;
@@ -315,7 +334,7 @@ async function saveSetting(key, value) {
 }
 
 /* ---------------- Shell ---------------- */
-const VIEWS = { till: "Daily Till", bazaar: "Bazaar Listings", alerts: "Payouts", lots: "Lots", suppliers: "Suppliers", rent: "Rent", settings: "Settings" };
+const VIEWS = { till: "Daily Till", money: "Money", bazaar: "Bazaar Listings", alerts: "Payouts", lots: "Lots", suppliers: "Suppliers", rent: "Rent", settings: "Settings" };
 
 function shell(inner) {
   const view = currentView();
@@ -346,7 +365,7 @@ function currentView() { const h = location.hash.slice(1); return VIEWS[h] ? h :
 
 function render() {
   const v = currentView();
-  ({ till: viewTill, bazaar: viewBazaar, alerts: viewAlerts, lots: viewLots, suppliers: viewSuppliers, rent: viewRent, settings: viewSettings })[v]();
+  ({ till: viewTill, money: viewMoney, bazaar: viewBazaar, alerts: viewAlerts, lots: viewLots, suppliers: viewSuppliers, rent: viewRent, settings: viewSettings })[v]();
 }
 
 /* ---------------- Daily Till ---------------- */
@@ -384,7 +403,7 @@ function stocksPanel(net) {
 function viewTill() {
   tillDay = tillDay || todayStr();
   const { from, to } = dayRange(tillDay);
-  const ev = state.events.filter(e => e.ts >= from && e.ts <= to);
+  const ev = state.events.filter(e => e.ts >= from && e.ts <= to && KIND_LABEL[e.kind]);
   const sum = (k, f = "net") => ev.filter(e => e.kind === k).reduce((a, e) => a + Number(e[f]), 0);
   const cnt = k => ev.filter(e => e.kind === k);
   const bz = sum("bazaar_sale"), im = sum("im_sale"), imFee = sum("im_sale", "fee"), loss = sum("mug");
@@ -444,6 +463,132 @@ function viewTill() {
   document.getElementById("next").onclick = () => go(1);
   document.getElementById("day").onchange = e => { tillDay = e.target.value || todayStr(); render(); };
   document.getElementById("tz").onchange = e => { LS.set("cf_tz", e.target.value); render(); };
+}
+
+/* ---------------- Money (statement) ---------------- */
+const TAGS = ["Sale", "Purchase", "Trade", "Supplier payment", "Rent", "Transfer", "Gift", "Loan", "Investment", "Loss", "Other"];
+const METHODS = ["Trade", "Sent money", "In person", "Bazaar", "Item Market", "Shop", "Other"];
+let moneyFilter = { period: "7", dir: "all", internal: false };
+
+function statementRows() {
+  const supByTorn = new Map(state.suppliers.map(s => [+s.torn_id, s]));
+  const acctName = id => state.profiles.find(p => +p.torn_id === +id)?.torn_name || TEAM[+id] || `#${id}`;
+  const who = id => id == null ? "?" : isTeam(id) ? acctName(id) : supByTorn.get(+id)?.name || `player #${id}`;
+  const out = [];
+  for (const e of state.events) {
+    const base = { ts: +e.ts, account: acctName(e.account_id), amount: Number(e.net) };
+    const q = e.qty ? `${e.qty}× ` : "";
+    switch (e.kind) {
+      case "bazaar_sale": out.push({ ...base, dir: "in", what: `Sold ${q}${e.item_name}`, tag: "Sale", method: "Bazaar" }); break;
+      case "im_sale": out.push({ ...base, dir: "in", what: `Sold ${q}${e.item_name}`, tag: "Sale", method: "Item Market", note: e.fee ? `after ${money(e.fee)} fee` : "" }); break;
+      case "im_buy": out.push({ ...base, dir: "out", what: `Bought ${q}${e.item_name}`, tag: "Purchase", method: "Item Market", amount: Number(e.gross) }); break;
+      case "bazaar_buy": out.push({ ...base, dir: "out", what: `Bought ${q}${e.item_name}`, tag: "Purchase", method: "Bazaar", note: e.counterparty_id ? `from ${who(e.counterparty_id)}` : "", amount: Number(e.gross) }); break;
+      case "abroad_buy": out.push({ ...base, dir: "out", what: `Bought ${q}${e.item_name}`, tag: "Purchase", method: "Shop abroad", amount: Number(e.gross) }); break;
+      case "shop_buy": out.push({ ...base, dir: "out", what: `Bought ${q}${e.item_name}`, tag: "Purchase", method: "City shop", amount: Number(e.gross) }); break;
+      case "mug": out.push({ ...base, dir: "out", what: `Mugged by ${who(e.counterparty_id)}`, tag: "Loss", method: "Mugging" }); break;
+      case "money_send": {
+        const internal = isTeam(e.counterparty_id), sup = supByTorn.get(+e.counterparty_id);
+        out.push({ ...base, dir: "out", internal, what: internal ? `Moved to ${who(e.counterparty_id)}` : `Sent to ${who(e.counterparty_id)}`, tag: internal ? "Internal" : sup ? "Supplier payment" : "Transfer", method: "Sent money" }); break;
+      }
+      case "money_receive": {
+        const internal = isTeam(e.counterparty_id);
+        out.push({ ...base, dir: "in", internal, what: internal ? `Moved from ${who(e.counterparty_id)}` : `Received from ${who(e.counterparty_id)}`, tag: internal ? "Internal" : "Transfer", method: "Sent money" }); break;
+      }
+    }
+  }
+  for (const r of state.rentLog || []) out.push({ ts: Math.floor(new Date(r.paid_at).getTime() / 1000), dir: "out", what: "Rent", tag: "Rent", method: "Rent", amount: Number(r.amount), account: r.paid_by || "", note: "marked on the Rent tab" });
+  for (const m of state.manual || []) out.push({ ts: +m.ts, dir: m.direction, what: m.description, tag: m.tag, method: m.method, amount: Number(m.amount), account: m.account || "", manual: m.id });
+  return out.sort((a, b) => b.ts - a.ts);
+}
+
+function viewMoney() {
+  const nowS = nowTs();
+  const since = moneyFilter.period === "today" ? dayRange(todayStr()).from : moneyFilter.period === "all" ? 0 : nowS - (+moneyFilter.period) * 86400;
+  let rows = statementRows().filter(r => r.ts >= since);
+  if (!moneyFilter.internal) rows = rows.filter(r => !r.internal);
+  const totIn = rows.filter(r => r.dir === "in").reduce((a, r) => a + r.amount, 0);
+  const totOut = rows.filter(r => r.dir === "out").reduce((a, r) => a + r.amount, 0);
+  const byTag = new Map();
+  for (const r of rows.filter(r => r.dir === "out")) byTag.set(r.tag, (byTag.get(r.tag) || 0) + r.amount);
+  if (moneyFilter.dir !== "all") rows = rows.filter(r => r.dir === moneyFilter.dir);
+  const days = new Map();
+  for (const r of rows) {
+    const k = new Date(r.ts * 1000).toLocaleDateString("en-GB", { weekday: "short", day: "2-digit", month: "short", year: "numeric", timeZone: LS.get("cf_tz") === "local" ? undefined : "UTC" });
+    (days.get(k) || days.set(k, []).get(k)).push(r);
+  }
+  const nowLocal = (() => { const d = new Date(), p = n => String(n).padStart(2, "0"); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; })();
+  const me = state.profiles.find(p => p.user_id === session.user.id);
+  const opt = (list, sel) => list.map(v => `<option ${v === sel ? "selected" : ""}>${esc(v)}</option>`).join("");
+  shell(`
+    ${stocksPanel(0, true)}
+
+    <form class="panel card" id="manualForm">
+      <div class="card-head"><h2>Add an entry</h2><span class="sub">for trades and anything the logs don't show</span></div>
+      ${state.manual === null ? `<p class="status err">Run the new SQL for the Money tab in Supabase to enable manual entries.</p>` : ""}
+      <div class="row">
+        <div class="seg" role="radiogroup" aria-label="Direction">
+          <label class="segbtn in"><input type="radio" name="mdir" value="in" checked> ↑ Money in</label>
+          <label class="segbtn out"><input type="radio" name="mdir" value="out"> ↓ Money out</label>
+        </div>
+        <label for="mAmt">Amount<input id="mAmt" type="number" min="1" step="1" required placeholder="2500000" style="width:150px"></label>
+        <label for="mDesc" style="flex:1 1 260px">What happened<input id="mDesc" required maxlength="200" placeholder="Traded 10 Xanax with Lord for cash"></label>
+      </div>
+      <div class="row">
+        <label for="mTag">Tag<select id="mTag">${opt(TAGS, "Trade")}</select></label>
+        <label for="mMethod">Method<select id="mMethod">${opt(METHODS, "Trade")}</select></label>
+        <label for="mAcct">Account<select id="mAcct">${opt(["Collector's Fix", ...state.profiles.map(p => p.torn_name).filter(Boolean)], me?.torn_name || "Collector's Fix")}</select></label>
+        <label for="mWhen">When<input id="mWhen" type="datetime-local" value="${nowLocal}"></label>
+        <button class="go" type="submit" ${state.manual === null ? "disabled" : ""}>Add entry</button>
+        <span class="status" id="mStatus"></span>
+      </div>
+    </form>
+
+    <section>
+      <div class="card-head" style="margin-bottom:10px"><h3 style="margin:0">Statement</h3>
+        <div class="row">
+          <select id="fPeriod" aria-label="Period">${[["today", "Today"], ["7", "Last 7 days"], ["30", "Last 30 days"], ["all", "Everything"]].map(([v, l]) => `<option value="${v}" ${moneyFilter.period === v ? "selected" : ""}>${l}</option>`).join("")}</select>
+          <select id="fDir" aria-label="Direction">${[["all", "In and out"], ["in", "Money in"], ["out", "Money out"]].map(([v, l]) => `<option value="${v}" ${moneyFilter.dir === v ? "selected" : ""}>${l}</option>`).join("")}</select>
+          <label class="check" for="fInt" style="display:flex;align-items:center;gap:6px;text-transform:none;letter-spacing:0;font:13px var(--f-body);color:var(--fg)"><input id="fInt" type="checkbox" ${moneyFilter.internal ? "checked" : ""}> show moves between your accounts</label>
+        </div>
+      </div>
+      <div class="drawers" style="margin-bottom:14px">
+        <div class="panel drawer" style="--c:var(--good)"><h2>Money in</h2><div class="big pos">${money(totIn)}</div></div>
+        <div class="panel drawer" style="--c:var(--bad)"><h2>Money out</h2><div class="big neg">${totOut ? "−" : ""}${money(totOut)}</div>
+          <div class="sub">${[...byTag].sort((a, b) => b[1] - a[1]).map(([t, v]) => `${esc(t)} ${money(v)}`).join(" · ") || "nothing spent"}</div></div>
+        <div class="panel drawer" style="--c:var(--neon)"><h2>Balance</h2><div class="big ${totIn - totOut < 0 ? "neg" : "pos"}">${money(totIn - totOut)}</div><div class="sub">in − out for this period</div></div>
+      </div>
+      <div class="panel statement">${days.size ? [...days].map(([day, list]) => {
+        const dIn = list.filter(r => r.dir === "in").reduce((a, r) => a + r.amount, 0), dOut = list.filter(r => r.dir === "out").reduce((a, r) => a + r.amount, 0);
+        return `<div class="sday"><span>${day}</span><span class="sub"><span class="pos">+${money(dIn)}</span> · <span class="neg">−${money(dOut)}</span></span></div>
+          ${list.map(r => `<div class="sline ${r.dir}${r.internal ? " internal" : ""}">
+            <span class="arrow" aria-hidden="true">${r.dir === "in" ? "↑" : "↓"}</span>
+            <div class="swhat"><b>${esc(r.what)}</b>
+              <span class="sub">${fmtTime(r.ts)} · ${esc(r.method)}${r.account ? " · " + esc(r.account) : ""}${r.note ? " · " + esc(r.note) : ""}</span></div>
+            <span class="tag">${esc(r.tag)}</span>
+            <span class="samt">${r.dir === "in" ? "+" : "−"}${money(r.amount)}</span>
+            ${r.manual ? `<button class="ghost small" data-del="${r.manual}" type="button" aria-label="Delete entry">✕</button>` : `<span class="spacer"></span>`}
+          </div>`).join("")}`;
+      }).join("") : `<div class="empty">Nothing in this period. Sync to read purchases and sales, or add an entry above.</div>`}</div>
+      <p class="note" style="margin-top:10px">Sales and purchases come from the Torn logs of every synced account. Money moved between RivenCross and BellaTricks is hidden by default because it stays inside Collector's Fix. Your wallets and stocks above already reflect everything here.</p>
+    </section>`);
+
+  const pick = () => { moneyFilter = { period: document.getElementById("fPeriod").value, dir: document.getElementById("fDir").value, internal: document.getElementById("fInt").checked }; render(); };
+  ["fPeriod", "fDir", "fInt"].forEach(id => document.getElementById(id).onchange = pick);
+  document.getElementById("manualForm").onsubmit = async ev => {
+    ev.preventDefault();
+    const st = document.getElementById("mStatus");
+    const when = document.getElementById("mWhen").value;
+    const row = { ts: when ? Math.floor(new Date(when).getTime() / 1000) : nowTs(), direction: document.querySelector('input[name="mdir"]:checked').value,
+      amount: Math.round(+document.getElementById("mAmt").value), description: document.getElementById("mDesc").value.trim(),
+      tag: document.getElementById("mTag").value, method: document.getElementById("mMethod").value, account: document.getElementById("mAcct").value, created_by: session.user.email };
+    const { error } = await sb.from("money_entries").insert(row);
+    if (error) { st.textContent = error.message; st.className = "status err"; return; }
+    await loadAll(); render();
+  };
+  $app.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => {
+    if (b.dataset.confirm !== "1") { b.dataset.confirm = "1"; b.textContent = "Delete?"; b.classList.add("danger"); return; }
+    await sb.from("money_entries").delete().eq("id", +b.dataset.del); await loadAll(); render();
+  });
 }
 
 /* ---------------- Bazaar listings ---------------- */

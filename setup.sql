@@ -125,3 +125,27 @@ alter table public.stock add column if not exists bazaar_price bigint default 0;
 alter table public.profiles add column if not exists stocks_value bigint;
 alter table public.profiles add column if not exists stocks jsonb;
 alter table public.profiles add column if not exists stocks_ts bigint default 0;
+
+-- Added later: Money tab (purchases, transfers and manual entries)
+alter table public.events drop constraint if exists events_kind_check;
+alter table public.events add constraint events_kind_check check (kind in
+  ('bazaar_sale','im_sale','receive','mug','im_buy','bazaar_buy','abroad_buy','shop_buy','money_send','money_receive'));
+create table if not exists public.money_entries (
+  id          bigint generated always as identity primary key,
+  ts          bigint not null,
+  direction   text not null check (direction in ('in','out')),
+  amount      bigint not null check (amount > 0),
+  description text not null,
+  tag         text,
+  method      text,
+  account     text,
+  created_by  text,
+  created_at  timestamptz default now()
+);
+alter table public.money_entries enable row level security;
+drop policy if exists "team access" on public.money_entries;
+create policy "team access" on public.money_entries for all to authenticated using (true) with check (true);
+revoke all on public.money_entries from anon;
+grant select, insert, update, delete on public.money_entries to authenticated;
+grant usage, select on all sequences in schema public to authenticated;
+notify pgrst, 'reload schema';
