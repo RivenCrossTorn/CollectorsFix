@@ -57,7 +57,7 @@ async function tornItems() {
 }
 
 async function logTypes() {
-  try { const c = JSON.parse(LS.get("cf_logtypes4") || "null"); if (c) return c; } catch {}
+  try { const c = JSON.parse(LS.get("cf_logtypes5") || "null"); if (c) return c; } catch {}
   let list = [];
   try {
     const j = await torn("/v2/torn/logtypes");
@@ -75,7 +75,11 @@ async function logTypes() {
   if (!ids.bazaar.length) ids.bazaar = [1221];
   if (!ids.im.length) ids.im = [1113];
   if (!ids.receive.length) ids.receive = [4103];
-  if (list.length) LS.set("cf_logtypes4", JSON.stringify(ids));
+  // Known Torn log type ids, used whenever the title lookup is missing or failed.
+  const KNOWN = { bazaar: [1226, 1221], im: [1113], receive: [4103], mug: [8156], im_buy: [1112], bazaar_buy: [1225, 1220],
+    abroad_buy: [4201], shop_buy: [4200], money_send: [4800], money_receive: [4810] };
+  for (const [k, v] of Object.entries(KNOWN)) ids[k] = [...new Set([...(ids[k] || []), ...v])];
+  if (list.length) LS.set("cf_logtypes5", JSON.stringify(ids));
   return ids;
 }
 
@@ -127,7 +131,7 @@ function parseLog(hash, e, ids, me, names) {
   }
   const gross = Number(d.cost_total ?? d.total_cost ?? (d.cost_each != null ? d.cost_each * totalQty : (d.cost ?? d.price ?? 0)));
   const fee = d.fee != null ? Number(d.fee) : (kind === "im_sale" ? Math.round(gross * 0.05) : 0);
-  const buyer = d.buyer ?? d.buyer_id ?? null;
+  const buyer = d.buyer ?? d.buyer_id ?? (d.seller ? d.seller : null) ?? null; // buyer on sales, seller on purchases
   items.forEach((i, n) => {
     const share = i.qty / totalQty;
     const g = Math.round(gross * share), f = Math.round(fee * share);
@@ -161,7 +165,7 @@ async function sync(statusEl) {
   const { data: prof } = await sb.from("profiles").select("*").eq("user_id", session.user.id).maybeSingle();
   const trackStart = Number(state.settings.tracking_start) || (nowTs() - 3 * 86400);
   let from = Math.max(trackStart, (prof?.torn_id === me ? prof.last_log_ts : 0) - 120);
-  const backfillKey = "cf_backfill_money_" + me;
+  const backfillKey = "cf_backfill_money2_" + me;
   if (!LS.get(backfillKey)) from = trackStart; // first sync since the Money tab: read purchases and transfers from the start
   const to = nowTs();
 
