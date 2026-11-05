@@ -604,11 +604,15 @@ function viewSuppliers() {
 /* ---------------- Rent ---------------- */
 function viewRent() {
   const rent = state.settings.rent || { amount: 12000000, every_days: 3, next_due: null };
-  const cash = state.profiles.reduce((a, p) => a + Number(p.money || 0), 0);
+  const wallets = state.profiles.reduce((a, p) => a + Number(p.money || 0), 0);
+  const stockVal = state.profiles.reduce((a, p) => a + Number(p.stocks_value || 0), 0);
+  const cash = wallets + stockVal;
   const owed = state.shares.filter(s => s.status === "pending").reduce((a, s) => a + Number(s.payout), 0);
   const free = cash - owed;
   const enough = free >= rent.amount;
-  const pct = Math.max(0, Math.min(100, Math.round(free / rent.amount * 100)));
+  const pctRaw = Math.max(0, free / rent.amount * 100);
+  const pct = Math.min(100, pctRaw);
+  const pctLabel = pctRaw >= 10 ? Math.floor(pctRaw) : pctRaw.toFixed(1);
   const due = rent.next_due ? new Date(rent.next_due) : null;
   const hoursLeft = due ? (due - Date.now()) / 3600000 : null;
   const weekAgo = nowTs() - 7 * 86400;
@@ -620,16 +624,20 @@ function viewRent() {
   shell(`
     <div class="panel pad card">
       <div class="card-head"><h2>Next rent · ${money(rent.amount)}</h2><span class="badge ${enough ? "good" : "bad"}">${enough ? "Covered" : "Not covered yet"}</span></div>
-      <div class="bar ${enough ? "full" : "warn"}"><i style="width:${pct}%"></i></div>
+      <div class="progress">
+        <div class="bar big-bar ${enough ? "full" : "warn"}" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(pct)}"><i style="width:${pct}%;min-width:${free > 0 ? "6px" : "0"}"></i></div>
+        <div class="sub">${pctLabel}% of the rent · ${money(Math.min(free, rent.amount))} / ${money(rent.amount)}${enough ? "" : ` · ${money(short)} to go`}</div>
+      </div>
       <div class="rentbig">
-        <div><span class="sub">CASH ON HAND</span><div class="big">${money(cash)}</div><div class="sub">${state.profiles.map(p => `${esc(p.torn_name || p.email)} ${money(p.money)}`).join(" · ") || "Sync to read wallets"}</div></div>
-        <div><span class="sub">OWED TO SUPPLIERS</span><div class="big neg">−${money(owed)}</div></div>
+        <div><span class="sub">CASH + STOCKS</span><div class="big">${money(cash)}</div>
+          <div class="sub">${state.profiles.map(p => `${esc(p.torn_name || p.email)}: ${money(p.money)} wallet + ${money(p.stocks_value || 0)} stocks`).join("<br>") || "Sync to read wallets"}</div></div>
+        <div><span class="sub">OWED TO SUPPLIERS</span><div class="big ${owed ? "neg" : ""}">${owed ? "−" + money(owed) : money(0)}</div></div>
         <div><span class="sub">FREE FOR RENT</span><div class="big ${enough ? "pos" : "neg"}">${money(free)}</div><div class="sub">${enough ? `${money(free - rent.amount)} left after paying` : `${money(short)} short`}</div></div>
         <div><span class="sub">DUE</span><div class="big">${due ? (hoursLeft > 0 ? `${Math.floor(hoursLeft / 24)}d ${Math.floor(hoursLeft % 24)}h` : "Overdue") : "—"}</div>
           <div class="sub">${due ? due.toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" }) : "Set the next due date below"}</div></div>
       </div>
       <p class="note">${short === 0 ? "You already have the rent free and clear." : daily > 0 ? `At the last 7 days' pace (${money(daily)}/day net sales) you cover the gap in about ${daysToCover < 1 ? "less than a day" : Math.ceil(daysToCover) + " day" + (Math.ceil(daysToCover) === 1 ? "" : "s")}.` : "No sales in the last 7 days to project from."}
-        Cash is the wallet of every synced account, minus supplier payouts that are still pending.</p>
+        Cash is the wallet plus stock market holdings of every synced account, minus supplier payouts that are still pending. It updates on every sync.</p>
       <div class="row"><button class="ok" id="paidRent" type="button" ${due ? "" : "disabled"}>Rent paid · move to next due date</button><span class="status" id="rentStatus"></span></div>
     </div>
     <form class="panel pad row" id="rentForm">

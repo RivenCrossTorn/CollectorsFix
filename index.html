@@ -79,6 +79,9 @@ td.t{font-family:var(--f-mono)}
 .pending .dot{background:var(--bad);box-shadow:0 0 8px var(--bad)} .paid .dot{background:var(--good)}
 .bar{height:8px;background:#120f10;border:1px solid var(--line);border-radius:5px;overflow:hidden}
 .bar i{display:block;height:100%;background:var(--teal)}
+.progress{display:grid;gap:6px}
+.bar.big-bar{height:14px;border-radius:7px}
+.bar i{transition:width .6s ease}
 .bar.warn i{background:var(--neon)} .bar.full i{background:var(--good)}
 .card{padding:16px;display:grid;gap:12px}
 .card-head{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px;align-items:baseline}
@@ -110,6 +113,6 @@ pre{white-space:pre-wrap;word-break:break-all;font:12px var(--f-mono);background
   <div class="panel login" id="loading"><p class="status">Loading…</p></div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js"></script>
-<script src="app.js?v=st3"></script>
+<script src="app.js?v=rent2"></script>
 </body>
 </html>
