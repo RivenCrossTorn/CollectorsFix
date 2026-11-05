@@ -136,7 +136,8 @@ async function sync(statusEl) {
   // Stock market holdings, valued at today's share price. Optional: needs the "stocks" permission (user + torn).
   let stocks = null;
   try {
-    const [mine, market] = await Promise.all([torn("/user/", { selections: "stocks" }), torn("/torn/", { selections: "stocks" })]);
+    const mine = await torn("/user/", { selections: "stocks" }).catch(e => { throw new Error(e.message.replace(/on stocks/, "on stocks (User column)").replace(/"stocks" permission/, '"stocks" permission in the USER column')); });
+    const market = await torn("/torn/", { selections: "stocks" }).catch(e => { throw new Error(e.message.replace(/on stocks/, "on stocks (Torn column)").replace(/"stocks" permission/, '"stocks" permission in the TORN column')); });
     const list = Object.values(mine.stocks || {}).map(h => {
       const m = (market.stocks || {})[h.stock_id] || {};
       const shares = Number(h.total_shares) || 0, price = Number(m.current_price) || 0;
