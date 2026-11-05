@@ -18,6 +18,9 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt
 const money = n => (n < 0 ? "−$" : "$") + Math.round(Math.abs(n || 0)).toLocaleString("en-US");
 const nowTs = () => Math.floor(Date.now() / 1000);
 const KIND_LABEL = { bazaar_sale: "Bazaar", im_sale: "Item Market", mug: "Mugged", receive: "Received" };
+// Collector's Fix's own accounts. Items moved between them are always Collector's Fix stock, never a supplier's.
+const TEAM = { 4572145: "RivenCross", 4546045: "BellaTricks" };
+const isTeam = id => id != null && (TEAM[+id] !== undefined || state.profiles.some(p => +p.torn_id === +id));
 
 let session = null;
 let state = { suppliers: [], lots: [], shares: [], profiles: [], stock: [], events: [], settings: {} };
@@ -215,6 +218,7 @@ function computeLots() {
     const revenue = g.sales.reduce((a, e) => a + Number(e.net), 0);
     const perSup = new Map();
     for (const r of g.receipts) {
+      if (isTeam(r.counterparty_id)) continue; // RivenCross ⇄ BellaTricks transfers stay Collector's Fix
       const s = supByTorn.get(+r.counterparty_id);
       if (s) perSup.set(s.id, { sup: s, qty: (perSup.get(s.id)?.qty || 0) + r.qty });
     }
@@ -380,7 +384,8 @@ function viewTill() {
       <thead><tr><th>Time</th><th>Type</th><th>Detail</th><th class="n">Qty</th><th class="n">Amount</th></tr></thead>
       <tbody>${ev.length ? [...ev].sort((a, b) => a.ts - b.ts).map(e => {
         const sup = state.suppliers.find(s => +s.torn_id === +e.counterparty_id);
-        const detail = e.kind === "mug" ? `Mugged by player #${e.counterparty_id ?? "?"}` : e.kind === "receive" ? `${e.item_name} from ${sup ? esc(sup.name) + " (supplier)" : "player #" + (e.counterparty_id ?? "?")}` : esc(e.item_name);
+        const from = isTeam(e.counterparty_id) ? `${esc(TEAM[+e.counterparty_id] || "team")} (Collector's Fix)` : sup ? esc(sup.name) + " (supplier)" : "player #" + (e.counterparty_id ?? "?");
+        const detail = e.kind === "mug" ? `Mugged by player #${e.counterparty_id ?? "?"}` : e.kind === "receive" ? `${esc(e.item_name)} from ${from}` : esc(e.item_name);
         const amt = e.kind === "mug" ? `<span class="neg">−${money(e.net)}</span>` : e.kind === "receive" ? "—" : money(e.net);
         return `<tr><td class="t">${fmtTime(e.ts)}</td><td><span class="pill ${e.kind}">${KIND_LABEL[e.kind]}</span></td><td>${detail}</td><td class="n">${e.kind === "mug" ? "—" : e.qty}</td><td class="n">${amt}</td></tr>`;
       }).join("") : `<tr><td colspan="5" class="empty">Nothing recorded on this day.</td></tr>`}</tbody>
@@ -432,7 +437,7 @@ function viewLots() {
   const shareByLot = new Map();
   for (const s of state.shares) (shareByLot.get(s.lot_id) || shareByLot.set(s.lot_id, []).get(s.lot_id)).push(s);
   shell(`
-    <p class="note">A lot is every unit of one item from the moment it arrives until the last one sells. Supplier items are recognised from "item received" logs; everything else counts as Collector's Fix stock. Nobody is paid until the whole lot sells out.</p>
+    <p class="note">A lot is every unit of one item from the moment it arrives until the last one sells. Supplier items are recognised from "item received" logs; everything else counts as Collector's Fix stock, including anything RivenCross and BellaTricks send each other. Nobody is paid until the whole lot sells out.</p>
     <section><h3>In progress</h3><div class="grid2">${open.length ? open.map(l => {
       const total = l.sold + l.left, pct = total ? Math.round(l.sold / total * 100) : 0;
       const supQ = l.perSup.reduce((a, p) => a + p.qty, 0);
@@ -493,6 +498,7 @@ function viewSuppliers() {
     ev.preventDefault();
     const st = document.getElementById("supStatus");
     const row = { name: document.getElementById("supName").value.trim(), torn_id: +document.getElementById("supId").value, rate: +document.getElementById("supRate").value };
+    if (isTeam(row.torn_id)) { st.textContent = "That's a Collector's Fix account, not a supplier."; st.className = "status err"; return; }
     const { error } = await sb.from("suppliers").insert(row);
     if (error) { st.textContent = error.message.includes("duplicate") ? "That Torn ID is already a supplier." : error.message; st.className = "status err"; return; }
     await loadAll(); render();
