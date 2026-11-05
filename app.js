@@ -38,7 +38,11 @@ async function torn(path, params = {}) {
   const r = await fetch(u);
   if (!r.ok) throw new Error(`Torn API HTTP ${r.status}`);
   const j = await r.json();
-  if (j.error) throw new Error(`Torn API error ${j.error.code}: ${j.error.error}`);
+  if (j.error) {
+    const what = params.selections || path.replace(/^\/(v2\/)?/, "").replace(/\/$/, "");
+    const hint = j.error.code === 16 ? ` — the key is missing the "${what}" permission` : "";
+    throw new Error(`Torn API error ${j.error.code} on ${what}: ${j.error.error}${hint}`);
+  }
   return j;
 }
 
@@ -126,7 +130,8 @@ async function sync(statusEl) {
   const say = (m, c) => { if (statusEl) { statusEl.textContent = m; statusEl.className = "status" + (c ? " " + c : ""); } };
   say("Connecting to Torn…");
   const [ids, names] = await Promise.all([logTypes(), tornItems()]);
-  const basic = await torn("/user/", { selections: "basic,money" });
+  const basic = await torn("/user/", { selections: "basic" });
+  Object.assign(basic, await torn("/user/", { selections: "money" }));
   const me = +basic.player_id;
   const { data: prof } = await sb.from("profiles").select("*").eq("user_id", session.user.id).maybeSingle();
   const trackStart = Number(state.settings.tracking_start) || (nowTs() - 3 * 86400);
