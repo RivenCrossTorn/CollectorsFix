@@ -130,6 +130,7 @@ async function sync(statusEl) {
   const say = (m, c) => { if (statusEl) { statusEl.textContent = m; statusEl.className = "status" + (c ? " " + c : ""); } };
   say("Connecting to Torn…");
   const [ids, names] = await Promise.all([logTypes(), tornItems()]);
+  const warnings = [];
   const basic = await torn("/user/", { selections: "basic" });
   Object.assign(basic, await torn("/user/", { selections: "money" }));
   // Stock market holdings, valued at today's share price. Optional: needs the "stocks" permission (user + torn).
@@ -142,7 +143,7 @@ async function sync(statusEl) {
       return { id: +h.stock_id, acronym: m.acronym || "", name: m.name || `Stock #${h.stock_id}`, shares, price, value: Math.round(shares * price) };
     }).filter(h => h.shares > 0);
     stocks = { list, value: list.reduce((a, h) => a + h.value, 0) };
-  } catch (e) { console.warn("stocks", e); stocks = { error: e.message }; }
+  } catch (e) { console.warn("stocks", e); stocks = { error: e.message }; warnings.push("stocks: " + e.message); }
   const me = +basic.player_id;
   const { data: prof } = await sb.from("profiles").select("*").eq("user_id", session.user.id).maybeSingle();
   const trackStart = Number(state.settings.tracking_start) || (nowTs() - 3 * 86400);
@@ -198,8 +199,10 @@ async function sync(statusEl) {
   if (stock.size) {
     const rowsS = [...stock.values()].map(s => ({ ...s, updated_at: new Date().toISOString() }));
     let { error } = await sb.from("stock").insert(rowsS);
-    if (error && /bazaar_price/.test(error.message)) // database not updated yet: save without prices
+    if (error && /bazaar_price/.test(error.message)) { // database not updated yet: save without prices
+      warnings.push("bazaar prices not saved (database is missing the bazaar_price column)");
       ({ error } = await sb.from("stock").insert(rowsS.map(({ bazaar_price, ...r }) => r)));
+    }
     if (error) throw new Error("Saving stock: " + error.message);
   }
 
@@ -209,6 +212,7 @@ async function sync(statusEl) {
   if (stocks && !stocks.error) Object.assign(profRow, { stocks_value: stocks.value, stocks: stocks.list, stocks_ts: nowTs() });
   let { error: pErr } = await sb.from("profiles").upsert(profRow);
   if (pErr && /stocks/.test(pErr.message)) { // database not updated yet: save without stocks
+    warnings.push("stocks not saved (database is missing the stocks columns)");
     const { stocks_value, stocks: _s, stocks_ts, ...rest } = profRow; ({ error: pErr } = await sb.from("profiles").upsert(rest));
   }
   if (pErr) throw new Error("Saving profile: " + pErr.message);
@@ -217,7 +221,8 @@ async function sync(statusEl) {
   await loadAll();
   const closed = await closeLots();
   await loadAll();
-  say(`Synced ${basic.name} · ${rows.length} new log lines · ${closed} lot${closed === 1 ? "" : "s"} closed · ${new Date().toLocaleTimeString("en-GB")}`, "okc");
+  say(`Synced ${basic.name} · ${rows.length} new log lines · ${closed} lot${closed === 1 ? "" : "s"} closed · ${new Date().toLocaleTimeString("en-GB")}` +
+    (warnings.length ? ` · ⚠ ${warnings.join(" · ")}` : ""), warnings.length ? "err" : "okc");
 }
 
 /* ---------------- Lots ---------------- */
@@ -331,7 +336,7 @@ function shell(inner) {
   if (btn) btn.onclick = async () => {
     btn.disabled = true;
     const st = document.getElementById("syncStatus");
-    try { await sync(st); const m = st.textContent; render(); const s2 = document.getElementById("syncStatus"); s2.textContent = m; s2.className = "status okc"; }
+    try { await sync(st); const m = st.textContent, c = st.className; render(); const s2 = document.getElementById("syncStatus"); s2.textContent = m; s2.className = c; }
     catch (e) { st.textContent = e.message; st.className = "status err"; btn.disabled = false; }
   };
 }
