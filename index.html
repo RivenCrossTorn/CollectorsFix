@@ -124,6 +124,13 @@ pre{white-space:pre-wrap;word-break:break-all;font:12px var(--f-mono);background
 .sline.in .samt{color:var(--good)} .sline.out .samt{color:var(--bad)}
 button.danger{border-color:var(--bad);color:var(--bad)}
 @media (max-width:640px){.sline{grid-template-columns:28px minmax(0,1fr) auto;row-gap:4px}.sline .tag{grid-column:2;justify-self:start}.sline .samt{grid-column:3;grid-row:1}.sline button,.sline .spacer{grid-column:3;grid-row:2;justify-self:end}}
+.lotedit{border-top:1px dashed var(--line);padding-top:10px}
+.lotedit summary{font:600 12px var(--f-mono);text-transform:uppercase;letter-spacing:.1em;color:var(--teal)}
+.rlist{display:grid;gap:4px}
+.rrow{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:center;font-size:14px;padding:6px 8px;background:#120f10;border:1px solid var(--line);border-radius:3px}
+.rrow .t{font:12px var(--f-mono);color:var(--muted)}
+.rrow.off{opacity:.6}
+.rrow.off span{text-decoration:line-through}
 .badge{font:600 12px var(--f-mono);padding:4px 10px;border-radius:3px;text-transform:uppercase;letter-spacing:.08em}
 .badge.good{background:rgba(74,222,128,.15);color:var(--good)} .badge.bad{background:rgba(255,107,107,.15);color:var(--bad)}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
@@ -134,6 +141,6 @@ button.danger{border-color:var(--bad);color:var(--bad)}
   <div class="panel login" id="loading"><p class="status">Loading…</p></div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js"></script>
-<script src="app.js?v=money2"></script>
+<script src="app.js?v=lots2"></script>
 </body>
 </html>

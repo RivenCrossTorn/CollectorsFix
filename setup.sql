@@ -149,3 +149,22 @@ revoke all on public.money_entries from anon;
 grant select, insert, update, delete on public.money_entries to authenticated;
 grant usage, select on all sequences in schema public to authenticated;
 notify pgrst, 'reload schema';
+
+-- Added later: edits on open lots (Lots tab → Details and edit)
+create table if not exists public.lot_overrides (
+  id          bigint generated always as identity primary key,
+  item_id     int not null,
+  kind        text not null check (kind in ('exclude','include','supplier_qty','withdraw','reset')),
+  event_id    text,
+  supplier_id bigint,
+  qty         int,
+  created_ts  bigint not null,
+  created_by  text
+);
+alter table public.lot_overrides enable row level security;
+drop policy if exists "team access" on public.lot_overrides;
+create policy "team access" on public.lot_overrides for all to authenticated using (true) with check (true);
+revoke all on public.lot_overrides from anon;
+grant select, insert, update, delete on public.lot_overrides to authenticated;
+grant usage, select on all sequences in schema public to authenticated;
+notify pgrst, 'reload schema';
