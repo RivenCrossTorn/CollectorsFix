@@ -165,22 +165,26 @@ async function sync(statusEl) {
   const { data: prof } = await sb.from("profiles").select("*").eq("user_id", session.user.id).maybeSingle();
   const trackStart = Number(state.settings.tracking_start) || (nowTs() - 3 * 86400);
   let from = Math.max(trackStart, (prof?.torn_id === me ? prof.last_log_ts : 0) - 120);
-  const backfillKey = "cf_backfill_money2_" + me;
+  const backfillKey = "cf_backfill_money3_" + me;
   if (!LS.get(backfillKey)) from = trackStart; // first sync since the Money tab: read purchases and transfers from the start
   const to = nowTs();
 
   // logs, newest first, 100 per page
+  // Torn silently returns an empty log when more than 10 log types are asked at once, so ask in groups of 10.
   const all = new Map();
-  let upper = to;
-  const typeList = Object.values(ids).flat().join(",");
-  for (let page = 0; page < 40; page++) {
-    const j = await torn("/user/", { selections: "log", log: typeList, from, to: upper });
-    const entries = Object.entries(j.log || {});
-    let added = 0, oldest = Infinity;
-    for (const [h, e] of entries) { if (!all.has(h)) { all.set(h, e); added++; } oldest = Math.min(oldest, e.timestamp); }
-    say(`Reading logs… ${all.size} entries`);
-    if (entries.length < 100 || added === 0 || oldest <= from) break;
-    upper = oldest;
+  const typeIds = [...new Set(Object.values(ids).flat())];
+  for (let g = 0; g < typeIds.length; g += 10) {
+    const typeList = typeIds.slice(g, g + 10).join(",");
+    let upper = to;
+    for (let page = 0; page < 40; page++) {
+      const j = await torn("/user/", { selections: "log", log: typeList, from, to: upper });
+      const entries = Object.entries(j.log || {});
+      let added = 0, oldest = Infinity;
+      for (const [h, e] of entries) { if (!all.has(h)) { all.set(h, e); added++; } oldest = Math.min(oldest, e.timestamp); }
+      say(`Reading logs… ${all.size} entries`);
+      if (entries.length < 100 || added === 0 || oldest <= from) break;
+      upper = oldest;
+    }
   }
   const rows = [];
   for (const [h, e] of all) rows.push(...parseLog(h, e, ids, me, names));
@@ -208,8 +212,8 @@ async function sync(statusEl) {
     const im = await torn("/v2/user/itemmarket");
     for (const l of (im.itemmarket || [])) add(l.item?.id ?? l.item_id ?? l.id, l.item?.name, "im_qty", l.amount ?? l.quantity ?? 1);
   } catch (e) { console.warn("itemmarket", e); }
-  const { data: evIds } = await sb.from("events").select("item_id").gte("ts", trackStart).in("kind", ["bazaar_sale", "im_sale", "receive"]).limit(10000);
-  const relevant = new Set([...(evIds || []).map(r => r.item_id), ...stock.keys()].filter(Boolean));
+  const lotKinds = ["bazaar_sale", "im_sale", "receive"];
+  const relevant = new Set([...state.events, ...rows].filter(r => lotKinds.includes(r.kind) && +r.ts >= trackStart).map(r => r.item_id).concat([...stock.keys()]).filter(Boolean));
   const cats = new Set([...relevant].map(id => names[id]?.type).filter(Boolean));
   for (const cat of cats) {
     try {
@@ -333,6 +337,18 @@ async function closeLots() {
 }
 
 /* ---------------- Data ---------------- */
+// Supabase hands back at most 1000 rows per request, so read the events in pages.
+async function loadEvents() {
+  const out = [];
+  for (let from = 0; from < 50000; from += 1000) {
+    const r = await sb.from("events").select("id,account_id,kind,ts,item_id,item_name,qty,gross,fee,net,counterparty_id")
+      .order("ts", { ascending: false }).order("id").range(from, from + 999);
+    if (r.error) return r;
+    out.push(...r.data);
+    if (r.data.length < 1000) break;
+  }
+  return { data: out, error: null };
+}
 async function loadAll() {
   const trackStart = 0;
   const [sup, lots, shares, profiles, stock, events, settings, manual, rentLog, overrides] = await Promise.all([
@@ -341,7 +357,7 @@ async function loadAll() {
     sb.from("lot_shares").select("*").order("id", { ascending: false }).limit(1000),
     sb.from("profiles").select("*"),
     sb.from("stock").select("*"),
-    sb.from("events").select("id,account_id,kind,ts,item_id,item_name,qty,gross,fee,net,counterparty_id").gte("ts", trackStart).order("ts", { ascending: false }).limit(10000),
+    loadEvents(),
     sb.from("settings").select("*"),
     sb.from("money_entries").select("*").order("ts", { ascending: false }).limit(5000),
     sb.from("rent_log").select("*").order("paid_at", { ascending: false }).limit(500),
