@@ -368,6 +368,7 @@ function stocksPanel(net) {
   const ps = state.profiles.filter(p => p.stocks_value != null);
   const total = ps.reduce((a, p) => a + Number(p.stocks_value || 0), 0);
   const last = ps.length ? Math.max(...ps.map(p => Number(p.stocks_ts) || 0)) : 0;
+  const wallets = state.profiles.reduce((a, p) => a + Number(p.money || 0), 0);
   const tip = p => (p.stocks || []).map(h => `${h.acronym || h.name}: ${Number(h.shares).toLocaleString("en-US")} sh · ${money(h.value)}`).join("\n");
   return `<div class="panel pad stocks">
     <div><span class="sub">STOCKS BY ACCOUNT</span>
@@ -375,8 +376,8 @@ function stocksPanel(net) {
         : `<p class="note">No stock data yet. Add the <b>stocks</b> permission (User and Torn) to your key, then sync.</p>`}</div>
     <div><span class="sub">STOCKS COMBINED</span><div class="big">${money(total)}</div>
       <div class="sub">${last ? "share prices as of " + new Date(last * 1000).toLocaleString("en-GB", { dateStyle: "short", timeStyle: "short" }) : ""}</div></div>
-    <div><span class="sub">NET TODAY + STOCKS</span><div class="big ${net + total < 0 ? "neg" : "pos"}">${money(net + total)}</div>
-      <div class="sub">${money(net)} today + ${money(total)} in stocks</div></div>
+    <div><span class="sub">TOTAL MONEY (WALLETS + STOCKS)</span><div class="big pos">${money(wallets + total)}</div>
+      <div class="sub">${money(wallets)} in wallets + ${money(total)} in stocks · today's sales are already inside these</div></div>
   </div>`;
 }
 
