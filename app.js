@@ -161,14 +161,14 @@ async function sync(statusEl) {
   // stock snapshot: bazaar + item market + inventory for the items we care about
   say("Counting stock…");
   const stock = new Map();
-  const add = (id, name, field, q) => {
+  const add = (id, name, field, q, price) => {
     id = +id; if (!id) return;
     const s = stock.get(id) || { account_id: me, item_id: id, item_name: name || names[id]?.name || `Item #${id}`, bazaar_qty: 0, im_qty: 0, inv_qty: 0 };
-    s[field] += Number(q) || 0; stock.set(id, s);
+    s[field] += Number(q) || 0; if (price != null) s.bazaar_price = Number(price) || 0; stock.set(id, s);
   };
   try {
     const bz = await torn("/user/", { selections: "bazaar" });
-    for (const b of (bz.bazaar || [])) add(b.ID ?? b.id, b.name, "bazaar_qty", b.quantity ?? b.amount);
+    for (const b of (bz.bazaar || [])) add(b.ID ?? b.id, b.name, "bazaar_qty", b.quantity ?? b.amount, b.price);
   } catch (e) { console.warn("bazaar", e); }
   try {
     const im = await torn("/v2/user/itemmarket");
@@ -185,7 +185,10 @@ async function sync(statusEl) {
   }
   await sb.from("stock").delete().eq("account_id", me);
   if (stock.size) {
-    const { error } = await sb.from("stock").insert([...stock.values()].map(s => ({ ...s, updated_at: new Date().toISOString() })));
+    const rowsS = [...stock.values()].map(s => ({ ...s, updated_at: new Date().toISOString() }));
+    let { error } = await sb.from("stock").insert(rowsS);
+    if (error && /bazaar_price/.test(error.message)) // database not updated yet: save without prices
+      ({ error } = await sb.from("stock").insert(rowsS.map(({ bazaar_price, ...r }) => r)));
     if (error) throw new Error("Saving stock: " + error.message);
   }
 
@@ -289,7 +292,7 @@ async function saveSetting(key, value) {
 }
 
 /* ---------------- Shell ---------------- */
-const VIEWS = { till: "Daily Till", alerts: "Payouts", lots: "Lots", suppliers: "Suppliers", rent: "Rent", settings: "Settings" };
+const VIEWS = { till: "Daily Till", bazaar: "Bazaar Listings", alerts: "Payouts", lots: "Lots", suppliers: "Suppliers", rent: "Rent", settings: "Settings" };
 
 function shell(inner) {
   const view = currentView();
@@ -320,7 +323,7 @@ function currentView() { const h = location.hash.slice(1); return VIEWS[h] ? h :
 
 function render() {
   const v = currentView();
-  ({ till: viewTill, alerts: viewAlerts, lots: viewLots, suppliers: viewSuppliers, rent: viewRent, settings: viewSettings })[v]();
+  ({ till: viewTill, bazaar: viewBazaar, alerts: viewAlerts, lots: viewLots, suppliers: viewSuppliers, rent: viewRent, settings: viewSettings })[v]();
 }
 
 /* ---------------- Daily Till ---------------- */
@@ -400,6 +403,40 @@ function viewTill() {
   document.getElementById("next").onclick = () => go(1);
   document.getElementById("day").onchange = e => { tillDay = e.target.value || todayStr(); render(); };
   document.getElementById("tz").onchange = e => { LS.set("cf_tz", e.target.value); render(); };
+}
+
+/* ---------------- Bazaar listings ---------------- */
+function viewBazaar() {
+  let names = {};
+  try { names = JSON.parse(LS.get("cf_items") || "null")?.items || {}; } catch {}
+  const nameOf = id => { const p = state.profiles.find(p => +p.torn_id === +id); return p?.torn_name || TEAM[+id] || `#${id}`; };
+  const rows = state.stock.filter(s => s.bazaar_qty > 0);
+  const accounts = [...new Set(rows.map(r => r.account_id))];
+  const open = new Map(computeLots().map(l => [l.item_id, l]));
+  const hasPrice = rows.some(r => Number(r.bazaar_price) > 0);
+  const totalQty = rows.reduce((a, r) => a + r.bazaar_qty, 0);
+  const totalVal = rows.reduce((a, r) => a + r.bazaar_qty * (Number(r.bazaar_price) || 0), 0);
+  const updated = rows.length ? new Date(Math.max(...rows.map(r => new Date(r.updated_at).getTime()))) : null;
+  shell(`
+    <div class="drawers">
+      <div class="panel drawer" style="--c:var(--neon)"><h2>Items listed</h2><div class="big">${totalQty.toLocaleString("en-US")}</div><div class="sub">${rows.length} different item${rows.length === 1 ? "" : "s"}</div></div>
+      <div class="panel drawer" style="--c:var(--teal)"><h2>Listed value</h2><div class="big">${hasPrice ? money(totalVal) : "—"}</div><div class="sub">at your bazaar prices</div></div>
+      <div class="panel drawer" style="--c:var(--rust)"><h2>Last read</h2><div class="big" style="font-size:22px">${updated ? updated.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) : "—"}</div><div class="sub">${updated ? updated.toLocaleDateString("en-GB") : "Sync to read the bazaar"}</div></div>
+    </div>
+    ${accounts.length ? accounts.map(acc => {
+      const list = rows.filter(r => r.account_id === acc).sort((a, b) => (b.bazaar_qty * (b.bazaar_price || 0)) - (a.bazaar_qty * (a.bazaar_price || 0)) || a.item_name.localeCompare(b.item_name));
+      return `<section><h3>${esc(nameOf(acc))}'s bazaar</h3><div class="panel tbl"><table>
+        <thead><tr><th>Item</th><th class="n">Qty</th><th class="n">Your price</th><th class="n">Market value</th><th class="n">Total</th><th>From suppliers</th></tr></thead>
+        <tbody>${list.map(r => {
+          const mv = names[r.item_id]?.value, pr = Number(r.bazaar_price) || 0, lot = open.get(r.item_id);
+          const diff = pr && mv ? Math.round((pr / mv - 1) * 100) : null;
+          return `<tr><td>${esc(r.item_name)}</td><td class="n">${r.bazaar_qty}</td>
+            <td class="n">${pr ? money(pr) : "—"}${diff != null ? ` <span class="sub ${diff > 0 ? "pos" : diff < 0 ? "neg" : ""}">${diff > 0 ? "+" : ""}${diff}%</span>` : ""}</td>
+            <td class="n">${mv ? money(mv) : "—"}</td><td class="n">${pr ? money(pr * r.bazaar_qty) : "—"}</td>
+            <td class="sub">${lot && lot.perSup.length ? lot.perSup.map(p => `${esc(p.sup.name)} ${p.qty}`).join(" · ") : "—"}</td></tr>`;
+        }).join("")}</tbody></table></div></section>`;
+    }).join("") : `<div class="panel empty">Nothing listed, or no sync yet. The bazaar is read from the account it belongs to, so BellaTricks needs to sync for her bazaar to show here.</div>`}
+    <p class="note">This is a snapshot from the last sync of each account, so it works while you travel. Market value comes from Torn and is refreshed once a day on this browser. "From suppliers" counts units suppliers sent into the current lot of that item.</p>`);
 }
 
 /* ---------------- Payouts (alerts) ---------------- */

@@ -56,6 +56,7 @@ create table if not exists public.stock (
   bazaar_qty int default 0,
   im_qty     int default 0,
   inv_qty    int default 0,
+  bazaar_price bigint default 0,
   updated_at timestamptz default now(),
   primary key (account_id, item_id)
 );
@@ -116,3 +117,6 @@ insert into public.settings (key, value) values
   ('rent',           '{"amount": 12000000, "every_days": 3, "next_due": null}'),
   ('tracking_start', 'null')
 on conflict (key) do nothing;
+
+-- Added later: bazaar listing prices (safe to run on an existing database)
+alter table public.stock add column if not exists bazaar_price bigint default 0;
