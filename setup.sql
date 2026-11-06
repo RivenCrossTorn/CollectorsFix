@@ -168,3 +168,11 @@ revoke all on public.lot_overrides from anon;
 grant select, insert, update, delete on public.lot_overrides to authenticated;
 grant usage, select on all sequences in schema public to authenticated;
 notify pgrst, 'reload schema';
+
+-- Added later: one lot per supplier shipment
+alter table public.lots add column if not exists batch_id text unique;
+alter table public.lots drop constraint if exists lots_item_id_closed_ts_key;
+-- clear unpaid payouts made by the old "whole item" lots; paid ones stay as history
+delete from public.lot_shares where status = 'pending' and lot_id in (select id from public.lots where batch_id is null);
+delete from public.lots where batch_id is null and id not in (select lot_id from public.lot_shares);
+notify pgrst, 'reload schema';

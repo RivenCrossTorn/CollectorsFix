@@ -252,85 +252,74 @@ async function sync(statusEl) {
 }
 
 /* ---------------- Lots ---------------- */
-function computeLots() {
+/* Every shipment a registered supplier sends is its own lot.
+   Sales of that item made after the shipment arrived are matched to the open shipments in arrival order
+   (first in, first out). When all of a shipment's units are sold, the lot closes and his share becomes a pending payout.
+   A later shipment of the same item is always a new lot, so units never carry over. Sales not matched to any
+   shipment are Collector's Fix stock. */
+function computeBatches() {
   const trackStart = Number(state.settings.tracking_start) || 0;
   const supByTorn = new Map(state.suppliers.map(s => [+s.torn_id, s]));
-  const supById = new Map(state.suppliers.map(s => [s.id, s]));
-  const lastClose = new Map();
-  for (const l of state.lots) lastClose.set(l.item_id, Math.max(lastClose.get(l.item_id) || 0, Number(l.closed_ts)));
   const ov = state.overrides || [];
-  const startOf = id => {
-    const base = Math.max(trackStart, lastClose.get(id) || 0);
-    const reset = Math.max(0, ...ov.filter(o => o.item_id === id && o.kind === "reset" && +o.created_ts > base).map(o => +o.created_ts));
-    return Math.max(base, reset);
-  };
-  const byItem = new Map();
+  const byBatch = new Map();
+  for (const o of [...ov].sort((x, y) => x.created_ts - y.created_ts)) {
+    if (!o.event_id) continue;
+    const c = byBatch.get(o.event_id) || {};
+    if (o.kind === "exclude") c.removed = true;
+    else if (o.kind === "include") c.removed = false;
+    else if (o.kind === "supplier_qty") c.qty = +o.qty;
+    else if (o.kind === "withdraw") c.kept = +o.qty;
+    byBatch.set(o.event_id, c);
+  }
+  const closedById = new Map(state.lots.filter(l => l.batch_id).map(l => [l.batch_id, l]));
+  const items = new Map();
   for (const e of state.events) {
-    if (!["bazaar_sale", "im_sale", "receive"].includes(e.kind) || !e.item_id) continue;
-    const start = startOf(e.item_id);
-    if (Number(e.ts) <= start) continue;
-    const g = byItem.get(e.item_id) || { item_id: e.item_id, item_name: e.item_name, start, sales: [], receipts: [] };
-    (e.kind === "receive" ? g.receipts : g.sales).push(e);
-    byItem.set(e.item_id, g);
-  }
-  const stockOf = id => state.stock.filter(s => s.item_id === id).reduce((a, s) => a + s.bazaar_qty + s.im_qty + s.inv_qty, 0);
-  const oldestSync = state.profiles.length ? Math.min(...state.profiles.map(p => Number(p.synced_ts) || 0)) : 0;
-  const out = [];
-  for (const g of byItem.values()) {
-    // edits made on the Lots tab for this lot (only those made after the lot opened)
-    const mine = ov.filter(o => o.item_id === g.item_id && +o.created_ts > g.start).sort((a, b) => a.created_ts - b.created_ts);
-    const excluded = new Set();
-    for (const o of mine) if (o.kind === "exclude") excluded.add(o.event_id); else if (o.kind === "include") excluded.delete(o.event_id);
-    const supQty = new Map(); for (const o of mine) if (o.kind === "supplier_qty") supQty.set(+o.supplier_id, +o.qty);
-    const keptO = mine.filter(o => o.kind === "withdraw").pop();
-    const kept = keptO ? +keptO.qty : 0;
-    const sales = g.sales.filter(e => !excluded.has(e.id));
-    const sold = sales.reduce((a, e) => a + e.qty, 0);
-    const revenue = sales.reduce((a, e) => a + Number(e.net), 0);
-    const perSup = new Map();
-    const receipts = g.receipts.map(r => {
-      const team = isTeam(r.counterparty_id), sup = team ? null : supByTorn.get(+r.counterparty_id);
-      const off = excluded.has(r.id);
-      if (sup && !off) perSup.set(sup.id, { sup, qty: (perSup.get(sup.id)?.qty || 0) + r.qty });
-      return { ...r, team, sup, off };
-    });
-    for (const [sid, q] of supQty) {
-      const sup = supById.get(sid); if (!sup) continue;
-      const cur = perSup.get(sid);
-      if (q <= 0) perSup.delete(sid); else perSup.set(sid, { sup, qty: q, edited: true, logged: cur?.qty || 0 });
-      if (cur && q > 0) perSup.get(sid).logged = cur.qty;
+    if (!e.item_id || +e.ts < trackStart) continue;
+    if (e.kind === "receive") {
+      if (isTeam(e.counterparty_id)) continue;
+      const sup = supByTorn.get(+e.counterparty_id); if (!sup) continue;
+      const c = byBatch.get(e.id) || {};
+      const g = items.get(e.item_id) || { batches: [], sales: [] }; items.set(e.item_id, g);
+      const qty = c.qty != null ? c.qty : e.qty, kept = Math.min(qty, c.kept || 0);
+      g.batches.push({ id: e.id, item_id: e.item_id, item_name: e.item_name, ts: +e.ts, sup, logged: e.qty, qty, kept, toSell: qty - kept,
+        removed: !!c.removed, edited: c.qty != null, sold: 0, revenue: 0, lastSale: 0, closed: closedById.get(e.id) || null });
+    } else if (e.kind === "bazaar_sale" || e.kind === "im_sale") {
+      const g = items.get(e.item_id) || { batches: [], sales: [] }; items.set(e.item_id, g);
+      g.sales.push(e);
     }
-    const left = Math.max(0, stockOf(g.item_id) - kept);
-    const lastEv = Math.max(0, ...sales.map(e => +e.ts), ...g.receipts.map(e => +e.ts));
-    out.push({ ...g, sales, receipts, sold, revenue, kept, perSup: [...perSup.values()], left, edits: mine.length,
-      opened: Math.min(...[...g.sales, ...g.receipts].map(e => +e.ts)), lastSale: Math.max(0, ...sales.map(e => +e.ts)),
-      canClose: sold > 0 && left === 0 && oldestSync >= lastEv });
   }
-  return out.sort((a, b) => b.lastSale - a.lastSale);
-}
-
-function splitLot(l) {
-  let supTotal = l.perSup.reduce((a, p) => a + p.qty, 0);
-  const scale = supTotal > l.sold ? l.sold / supTotal : 1;
-  const shares = l.perSup.map(p => {
-    const qty = Math.round(p.qty * scale);
-    const gross = Math.round(l.revenue * qty / l.sold);
-    const rate = Number(p.sup.rate);
-    return { supplier_id: p.sup.id, supplier_name: p.sup.name, qty, rate, gross_share: gross, payout: Math.round(gross * (1 - rate / 100)) };
-  });
-  supTotal = shares.reduce((a, s) => a + s.qty, 0);
-  const cfKeeps = l.revenue - shares.reduce((a, s) => a + s.payout, 0);
-  return { shares, own: Math.max(0, l.sold - supTotal), cfKeeps };
+  const oldestSync = state.profiles.length ? Math.min(...state.profiles.map(p => Number(p.synced_ts) || 0)) : 0;
+  const all = [];
+  for (const g of items.values()) {
+    const live = g.batches.filter(b => !b.removed).sort((x, y) => x.ts - y.ts || (x.id < y.id ? -1 : 1));
+    for (const sale of [...g.sales].sort((x, y) => x.ts - y.ts || (x.id < y.id ? -1 : 1))) {
+      let units = sale.qty; const each = Number(sale.net) / (sale.qty || 1);
+      for (const b of live) {
+        if (units <= 0) break;
+        if (b.ts > +sale.ts || b.sold >= b.toSell) continue;
+        const take = Math.min(units, b.toSell - b.sold);
+        b.sold += take; b.revenue += take * each; b.lastSale = Math.max(b.lastSale, +sale.ts); units -= take;
+      }
+    }
+    for (const b of g.batches) {
+      b.revenue = Math.round(b.revenue);
+      b.done = b.toSell > 0 && b.sold >= b.toSell;
+      b.canClose = b.done && !b.closed && !b.removed && oldestSync >= b.lastSale;
+      all.push(b);
+    }
+  }
+  return all.sort((x, y) => y.ts - x.ts);
 }
 
 async function closeLots() {
   let n = 0;
-  for (const l of computeLots().filter(x => x.canClose)) {
-    const { shares, own, cfKeeps } = splitLot(l);
-    const { data, error } = await sb.from("lots").insert({ item_id: l.item_id, item_name: l.item_name, opened_ts: l.opened, closed_ts: l.lastSale,
-      sold_qty: l.sold, revenue: l.revenue, own_qty: own, cf_keeps: cfKeeps }).select().maybeSingle();
-    if (error || !data) continue; // the other person closed it first
-    if (shares.length) await sb.from("lot_shares").insert(shares.map(s => ({ ...s, lot_id: data.id })));
+  for (const b of computeBatches().filter(x => x.canClose)) {
+    const rate = Number(b.sup.rate);
+    const payout = Math.round(b.revenue * (1 - rate / 100));
+    const { data, error } = await sb.from("lots").insert({ item_id: b.item_id, item_name: b.item_name, batch_id: b.id, opened_ts: b.ts, closed_ts: b.lastSale,
+      sold_qty: b.sold, revenue: b.revenue, own_qty: 0, cf_keeps: b.revenue - payout }).select().maybeSingle();
+    if (error || !data) continue; // already closed by the other person
+    await sb.from("lot_shares").insert({ lot_id: data.id, supplier_id: b.sup.id, supplier_name: b.sup.name, qty: b.sold, rate, gross_share: b.revenue, payout });
     n++;
   }
   return n;
@@ -644,7 +633,10 @@ function viewBazaar() {
   const nameOf = id => { const p = state.profiles.find(p => +p.torn_id === +id); return p?.torn_name || TEAM[+id] || `#${id}`; };
   const rows = state.stock.filter(s => s.bazaar_qty > 0);
   const accounts = [...new Set(rows.map(r => r.account_id))];
-  const open = new Map(computeLots().map(l => [l.item_id, l]));
+  const supLeft = new Map();
+  for (const b of computeBatches().filter(b => !b.closed && !b.removed && b.toSell > b.sold)) {
+    const m = supLeft.get(b.item_id) || new Map(); m.set(b.sup.name, (m.get(b.sup.name) || 0) + b.toSell - b.sold); supLeft.set(b.item_id, m);
+  }
   const hasPrice = rows.some(r => Number(r.bazaar_price) > 0);
   const totalQty = rows.reduce((a, r) => a + r.bazaar_qty, 0);
   const totalVal = rows.reduce((a, r) => a + r.bazaar_qty * (Number(r.bazaar_price) || 0), 0);
@@ -660,15 +652,15 @@ function viewBazaar() {
       return `<section><h3>${esc(nameOf(acc))}'s bazaar</h3><div class="panel tbl"><table>
         <thead><tr><th>Item</th><th class="n">Qty</th><th class="n">Your price</th><th class="n">Market value</th><th class="n">Total</th><th>From suppliers</th></tr></thead>
         <tbody>${list.map(r => {
-          const mv = names[r.item_id]?.value, pr = Number(r.bazaar_price) || 0, lot = open.get(r.item_id);
+          const mv = names[r.item_id]?.value, pr = Number(r.bazaar_price) || 0, lot = supLeft.get(r.item_id);
           const diff = pr && mv ? Math.round((pr / mv - 1) * 100) : null;
           return `<tr><td>${esc(r.item_name)}</td><td class="n">${r.bazaar_qty}</td>
             <td class="n">${pr ? money(pr) : "—"}${diff != null ? ` <span class="sub ${diff > 0 ? "pos" : diff < 0 ? "neg" : ""}">${diff > 0 ? "+" : ""}${diff}%</span>` : ""}</td>
             <td class="n">${mv ? money(mv) : "—"}</td><td class="n">${pr ? money(pr * r.bazaar_qty) : "—"}</td>
-            <td class="sub">${lot && lot.perSup.length ? lot.perSup.map(p => `${esc(p.sup.name)} ${p.qty}`).join(" · ") : "—"}</td></tr>`;
+            <td class="sub">${lot ? [...lot].map(([n, q]) => `${esc(n)} ${q}`).join(" · ") : "—"}</td></tr>`;
         }).join("")}</tbody></table></div></section>`;
     }).join("") : `<div class="panel empty">Nothing listed, or no sync yet. The bazaar is read from the account it belongs to, so BellaTricks needs to sync for her bazaar to show here.</div>`}
-    <p class="note">This is a snapshot from the last sync of each account, so it works while you travel. Market value comes from Torn and is refreshed once a day on this browser. "From suppliers" counts units suppliers sent into the current lot of that item.</p>`);
+    <p class="note">This is a snapshot from the last sync of each account, so it works while you travel. Market value comes from Torn and is refreshed once a day on this browser. "From suppliers" counts units of open supplier lots that are still unsold.</p>`);
 }
 
 /* ---------------- Payouts (alerts) ---------------- */
@@ -707,74 +699,65 @@ async function setPaid(id, paid) {
 
 /* ---------------- Lots ---------------- */
 function viewLots() {
-  const open = computeLots();
+  const batches = computeBatches();
+  const open = batches.filter(b => !b.closed && !b.removed);
+  const removed = batches.filter(b => b.removed && !b.closed);
   const shareByLot = new Map();
   for (const s of state.shares) (shareByLot.get(s.lot_id) || shareByLot.set(s.lot_id, []).get(s.lot_id)).push(s);
+  const fmtD = ts => new Date(ts * 1000).toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+  const newLots = state.lots.filter(l => l.batch_id);
   shell(`
-    <p class="note">A lot is every unit of one item from the moment it arrives until the last one sells. Supplier items are recognised from "item received" logs; everything else counts as Collector's Fix stock, including anything RivenCross and BellaTricks send each other. Nobody is paid until the whole lot sells out.</p>
-    <section><h3>In progress</h3>
-    ${state.overrides === null ? `<p class="status err">Run the new SQL for lot editing in Supabase to enable Edit.</p>` : ""}
-    <div class="grid2">${open.length ? open.map(l => {
-      const total = l.sold + l.left, pct = total ? Math.round(l.sold / total * 100) : 0;
-      const supQ = l.perSup.reduce((a, p) => a + p.qty, 0);
-      const fmtD = ts => new Date(ts * 1000).toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
-      return `<div class="panel card" data-item="${l.item_id}">
-        <div class="card-head"><h2>${esc(l.item_name)}</h2><span class="sub">${l.sold}/${total} sold${l.edits ? " · edited" : ""}</span></div>
-        <div class="bar ${pct >= 100 ? "full" : ""}"><i style="width:${pct}%"></i></div>
-        <div class="kv"><div><span>Revenue so far</span><b>${money(l.revenue)}</b></div><div><span>Left to sell</span><b>${l.left}</b></div>
-          <div><span>From suppliers</span><b>${supQ}</b></div><div><span>Collector's Fix</span><b>${Math.max(0, total - supQ)}</b></div></div>
-        <div class="sub">${l.perSup.length ? l.perSup.map(p => `${esc(p.sup.name)}: ${p.qty}${p.edited ? ` (edited, logs say ${p.logged})` : ""}`).join(" · ") : "No supplier items in this lot"}${l.kept ? ` · ${l.kept} kept, not for sale` : ""}${l.left === 0 && l.sold && !l.canClose ? " · waiting for every account to sync before closing" : ""}</div>
-        ${state.overrides === null ? "" : `<details class="lotedit">
-          <summary>Details and edit</summary>
-          <div class="sub" style="margin:8px 0 4px">ITEMS RECEIVED IN THIS LOT</div>
-          ${l.receipts.length ? `<div class="rlist">${l.receipts.map(r => `<div class="rrow ${r.off ? "off" : ""}">
-            <span class="t">${fmtD(r.ts)}</span>
-            <span>${r.qty}× from ${r.team ? `${esc(TEAM[+r.counterparty_id] || "team")} <span class="sub">(Collector's Fix)</span>` : r.sup ? `<b>${esc(r.sup.name)}</b> <span class="sub">(supplier)</span>` : `player #${r.counterparty_id ?? "?"} <span class="sub">(not a supplier)</span>`}</span>
-            <button class="ghost small" type="button" data-ov="${r.off ? "include" : "exclude"}" data-ev="${esc(r.id)}">${r.off ? "Count it" : "Don't count"}</button>
-          </div>`).join("")}</div>` : `<p class="note">No "item received" logs in this lot. Everything here was bought or already in stock.</p>`}
-          <div class="row" style="margin-top:12px">
-            ${state.suppliers.filter(s => s.active || l.perSup.some(p => p.sup.id === s.id)).map(s => {
-              const cur = l.perSup.find(p => p.sup.id === s.id)?.qty || 0;
-              return `<label>${esc(s.name)} units<input type="number" min="0" value="${cur}" data-supq="${s.id}" style="width:100px"></label>`;
-            }).join("")}
-            <label>Kept, not for sale<input type="number" min="0" value="${l.kept}" data-kept style="width:110px"></label>
-            <button class="go small" type="button" data-save-lot>Save changes</button>
+    <p class="note">Each shipment a supplier sends is its own lot. Sales of that item made after it arrived count towards it, oldest shipment first. When all its units are sold the lot closes and his share goes to Payouts. A new shipment always starts a new lot. Items from RivenCross, BellaTricks or anyone who isn't a registered supplier are Collector's Fix stock.</p>
+    ${state.overrides === null ? `<p class="status err">Run the SQL for lot editing in Supabase to enable editing.</p>` : ""}
+    <section><h3>In progress</h3><div class="grid2">${open.length ? open.map(b => {
+      const pct = b.toSell ? Math.min(100, Math.round(b.sold / b.toSell * 100)) : 0;
+      const share = Math.round(b.revenue * (1 - Number(b.sup.rate) / 100));
+      return `<div class="panel card" data-batch="${esc(b.id)}" data-item="${b.item_id}">
+        <div class="card-head"><h2>${esc(b.item_name)}</h2><span class="sub">${esc(b.sup.name)} · received ${fmtD(b.ts)}</span></div>
+        <div class="bar ${b.done ? "full" : ""}"><i style="width:${pct}%"></i></div>
+        <div class="kv"><div><span>Sold</span><b>${b.sold} / ${b.toSell}</b></div><div><span>Revenue so far</span><b>${money(b.revenue)}</b></div>
+          <div><span>His share so far</span><b>${money(share)}</b></div><div><span>Your ${Number(b.sup.rate)}%</span><b>${money(b.revenue - share)}</b></div></div>
+        <div class="sub">${b.edited ? `Units edited (logs say ${b.logged}) · ` : ""}${b.kept ? `${b.kept} kept, not for sale · ` : ""}${b.done ? "Sold out · closes after every account syncs" : `${b.toSell - b.sold} left to sell`}</div>
+        ${state.overrides === null ? "" : `<details class="lotedit"><summary>Edit</summary>
+          <div class="row" style="margin-top:10px">
+            <label>Units he sent<input type="number" min="0" value="${b.qty}" data-q style="width:100px"></label>
+            <label>Kept, not for sale<input type="number" min="0" value="${b.kept}" data-kept style="width:110px"></label>
+            <button class="go small" type="button" data-save>Save</button>
+            <button class="ghost small" type="button" data-remove>Remove this lot</button>
           </div>
-          <div class="row" style="margin-top:12px;justify-content:space-between">
-            <span class="note">"Kept" units stop counting as stock, so the lot can close without them. Removing the lot starts it from zero; past sales stay in the Daily Till.</span>
-            <button class="ghost small" type="button" data-reset>Remove this lot</button>
-          </div>
+          <p class="note" style="margin-top:8px">Kept units are left out, so the lot closes once the rest is sold. Removing the lot stops it counting; its sales go back to Collector's Fix.</p>
         </details>`}
       </div>`;
-    }).join("") : `<div class="panel empty">No open lots. Sync to read your logs.</div>`}</div></section>
+    }).join("") : `<div class="panel empty">No open lots. A lot appears when a registered supplier sends you items.</div>`}</div></section>
+    ${removed.length ? `<section><h3>Removed</h3><div class="panel tbl"><table><tbody>${removed.map(b => `<tr data-batch="${esc(b.id)}" data-item="${b.item_id}">
+      <td class="t">${fmtD(b.ts)}</td><td>${b.qty}× ${esc(b.item_name)}</td><td>${esc(b.sup.name)}</td><td class="n"><button class="ghost small" type="button" data-restore>Restore</button></td></tr>`).join("")}</tbody></table></div></section>` : ""}
     <section><h3>Sold out</h3><div class="panel tbl"><table>
-      <thead><tr><th>Closed</th><th>Item</th><th class="n">Sold</th><th class="n">Revenue</th><th>Split</th><th class="n">Collector's Fix keeps</th></tr></thead>
-      <tbody>${state.lots.length ? state.lots.map(l => `<tr><td class="t">${new Date(l.closed_ts * 1000).toLocaleDateString("en-GB")}</td><td>${esc(l.item_name)}</td>
-        <td class="n">${l.sold_qty}</td><td class="n">${money(l.revenue)}</td>
-        <td>${(shareByLot.get(l.id) || []).map(s => `<span class="${s.status === "paid" ? "pos" : "neg"}">${esc(s.supplier_name)} ${s.qty} → ${money(s.payout)}</span>`).join(" · ")}${(shareByLot.get(l.id) || []).length ? " · " : ""}CF ${l.own_qty}</td>
-        <td class="n">${money(l.cf_keeps)}</td></tr>`).join("") : `<tr><td colspan="6" class="empty">No lots sold out yet.</td></tr>`}</tbody>
+      <thead><tr><th>Received</th><th>Closed</th><th>Item</th><th>Supplier</th><th class="n">Units</th><th class="n">Revenue</th><th class="n">His payout</th><th class="n">You keep</th></tr></thead>
+      <tbody>${newLots.length ? newLots.map(l => { const sh = (shareByLot.get(l.id) || [])[0];
+        return `<tr><td class="t">${new Date(l.opened_ts * 1000).toLocaleDateString("en-GB")}</td><td class="t">${new Date(l.closed_ts * 1000).toLocaleDateString("en-GB")}</td><td>${esc(l.item_name)}</td>
+        <td>${esc(sh?.supplier_name || "")}</td><td class="n">${l.sold_qty}</td><td class="n">${money(l.revenue)}</td>
+        <td class="n ${sh?.status === "paid" ? "pos" : "neg"}">${sh ? money(sh.payout) : "—"}</td><td class="n">${money(l.cf_keeps)}</td></tr>`; }).join("")
+        : `<tr><td colspan="8" class="empty">No supplier lots sold out yet.</td></tr>`}</tbody>
     </table></div></section>`);
   const addOv = rows => sb.from("lot_overrides").insert(rows.map(r => ({ ...r, created_ts: nowTs(), created_by: session.user.email })));
   const done = async res => { await loadAll(); render(); if (res?.error) { const st = document.getElementById("syncStatus"); st.textContent = "Could not save: " + res.error.message; st.className = "status err"; } };
-  for (const card of $app.querySelectorAll("[data-item]")) {
-    const item = +card.dataset.item, lot = open.find(l => l.item_id === item);
-    card.querySelectorAll("[data-ov]").forEach(b => b.onclick = async () => done(await addOv([{ item_id: item, kind: b.dataset.ov, event_id: b.dataset.ev }])));
-    const save = card.querySelector("[data-save-lot]");
+  for (const el of $app.querySelectorAll("[data-batch]")) {
+    const id = el.dataset.batch, item = +el.dataset.item, b = batches.find(x => x.id === id);
+    const save = el.querySelector("[data-save]");
     if (save) save.onclick = async () => {
+      const q = Math.max(0, Math.round(+el.querySelector("[data-q]").value || 0)), k = Math.max(0, Math.round(+el.querySelector("[data-kept]").value || 0));
       const rows = [];
-      card.querySelectorAll("[data-supq]").forEach(i => {
-        const sid = +i.dataset.supq, v = Math.max(0, Math.round(+i.value || 0)), cur = lot.perSup.find(p => p.sup.id === sid)?.qty || 0;
-        if (v !== cur) rows.push({ item_id: item, kind: "supplier_qty", supplier_id: sid, qty: v });
-      });
-      const k = Math.max(0, Math.round(+card.querySelector("[data-kept]").value || 0));
-      if (k !== lot.kept) rows.push({ item_id: item, kind: "withdraw", qty: k });
+      if (q !== b.qty) rows.push({ item_id: item, event_id: id, kind: "supplier_qty", qty: q });
+      if (k !== b.kept) rows.push({ item_id: item, event_id: id, kind: "withdraw", qty: k });
       if (rows.length) done(await addOv(rows));
     };
-    const reset = card.querySelector("[data-reset]");
-    if (reset) reset.onclick = async () => {
-      if (reset.dataset.confirm !== "1") { reset.dataset.confirm = "1"; reset.textContent = "Click again to remove"; reset.classList.add("danger"); return; }
-      done(await addOv([{ item_id: item, kind: "reset" }]));
+    const rm = el.querySelector("[data-remove]");
+    if (rm) rm.onclick = async () => {
+      if (rm.dataset.confirm !== "1") { rm.dataset.confirm = "1"; rm.textContent = "Click again to remove"; rm.classList.add("danger"); return; }
+      done(await addOv([{ item_id: item, event_id: id, kind: "exclude" }]));
     };
+    const rs = el.querySelector("[data-restore]");
+    if (rs) rs.onclick = async () => done(await addOv([{ item_id: item, event_id: id, kind: "include" }]));
   }
 }
 
