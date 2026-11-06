@@ -444,7 +444,12 @@ function viewTill() {
   const bz = sum("bazaar_sale"), im = sum("im_sale"), imFee = sum("im_sale", "fee"), loss = sum("mug");
   const lotsToday = state.lots.filter(l => l.closed_ts >= from && l.closed_ts <= to);
   const supToday = state.shares.filter(s => lotsToday.some(l => l.id === s.lot_id)).reduce((a, s) => a + Number(s.payout), 0);
-  const net = bz + im - loss;
+  const BUY = ["im_buy", "bazaar_buy", "abroad_buy", "shop_buy"];
+  const buys = state.events.filter(e => e.ts >= from && e.ts <= to && BUY.includes(e.kind));
+  const spent = buys.reduce((a, e) => a + Number(e.gross), 0);
+  const mugs = cnt("mug").length;
+  const losses = loss + spent;
+  const net = bz + im - losses;
   const agg = new Map();
   for (const e of ev.filter(e => e.kind === "bazaar_sale" || e.kind === "im_sale")) {
     const k = e.kind + "|" + e.item_id;
@@ -467,8 +472,8 @@ function viewTill() {
         <div class="sub">${cnt("bazaar_sale").length} sales · ${cnt("bazaar_sale").reduce((a, e) => a + e.qty, 0)} items</div></div>
       <div class="panel drawer" style="--c:var(--teal)"><h2>Item Market</h2><div class="big">${money(im)}</div>
         <div class="sub">${cnt("im_sale").length} sales · fees ${money(imFee)}</div></div>
-      <div class="panel drawer" style="--c:var(--bad)"><h2>Losses</h2><div class="big neg">${loss ? "−" : ""}${money(loss)}</div>
-        <div class="sub">${cnt("mug").length} mugging${cnt("mug").length === 1 ? "" : "s"}</div></div>
+      <div class="panel drawer" style="--c:var(--bad)"><h2>Losses</h2><div class="big neg">${losses ? "−" : ""}${money(losses)}</div>
+        <div class="sub">${mugs} mugging${mugs === 1 ? "" : "s"}, ${buys.length} purchase${buys.length === 1 ? "" : "s"}</div></div>
       <div class="panel drawer" style="--c:var(--rust)"><h2>Owed from lots closed</h2><div class="big">${money(supToday)}</div>
         <div class="sub">${lotsToday.length} lot${lotsToday.length === 1 ? "" : "s"} sold out today</div></div>
     </div>
@@ -542,9 +547,13 @@ function viewMoney() {
   let rows = statementRows().filter(r => r.ts >= since);
   if (!moneyFilter.internal) rows = rows.filter(r => !r.internal);
   const totIn = rows.filter(r => r.dir === "in").reduce((a, r) => a + r.amount, 0);
-  const totOut = rows.filter(r => r.dir === "out").reduce((a, r) => a + r.amount, 0);
+  const isMug = r => r.method === "Mugging";
+  const totOut = rows.filter(r => r.dir === "out" && !isMug(r)).reduce((a, r) => a + r.amount, 0);
+  const mugRows = rows.filter(isMug), totMug = mugRows.reduce((a, r) => a + r.amount, 0);
+  const balance = totIn - totOut - totMug;
+  const inCount = rows.filter(r => r.dir === "in").length;
   const byTag = new Map();
-  for (const r of rows.filter(r => r.dir === "out")) byTag.set(r.tag, (byTag.get(r.tag) || 0) + r.amount);
+  for (const r of rows.filter(r => r.dir === "out" && !isMug(r))) byTag.set(r.tag, (byTag.get(r.tag) || 0) + r.amount);
   if (moneyFilter.dir !== "all") rows = rows.filter(r => r.dir === moneyFilter.dir);
   const days = new Map();
   for (const r of rows) {
@@ -587,10 +596,12 @@ function viewMoney() {
         </div>
       </div>
       <div class="drawers" style="margin-bottom:14px">
-        <div class="panel drawer" style="--c:var(--good)"><h2>Money in</h2><div class="big pos">${money(totIn)}</div></div>
+        <div class="panel drawer" style="--c:var(--good)"><h2>Money in</h2><div class="big pos">${money(totIn)}</div><div class="sub">${inCount} entr${inCount === 1 ? "y" : "ies"}</div></div>
         <div class="panel drawer" style="--c:var(--bad)"><h2>Money out</h2><div class="big neg">${totOut ? "−" : ""}${money(totOut)}</div>
           <div class="sub">${[...byTag].sort((a, b) => b[1] - a[1]).map(([t, v]) => `${esc(t)} ${money(v)}`).join(" · ") || "nothing spent"}</div></div>
-        <div class="panel drawer" style="--c:var(--neon)"><h2>Balance</h2><div class="big ${totIn - totOut < 0 ? "neg" : "pos"}">${money(totIn - totOut)}</div><div class="sub">in − out for this period</div></div>
+        <div class="panel drawer" style="--c:var(--rust)"><h2>Muggings</h2><div class="big neg">${totMug ? "−" : ""}${money(totMug)}</div>
+          <div class="sub">${mugRows.length} mugging${mugRows.length === 1 ? "" : "s"}</div></div>
+        <div class="panel drawer" style="--c:var(--neon)"><h2>Total balance</h2><div class="big ${balance < 0 ? "neg" : "pos"}">${balance < 0 ? "−" : ""}${money(Math.abs(balance))}</div><div class="sub">in − out − muggings for this period</div></div>
       </div>
       <div class="panel statement">${days.size ? [...days].map(([day, list]) => {
         const dIn = list.filter(r => r.dir === "in").reduce((a, r) => a + r.amount, 0), dOut = list.filter(r => r.dir === "out").reduce((a, r) => a + r.amount, 0);
