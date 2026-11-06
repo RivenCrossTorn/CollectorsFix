@@ -675,15 +675,19 @@ function viewBazaar() {
 }
 
 /* ---------------- Payouts (alerts) ---------------- */
+const paySel = new Set();
 function viewAlerts() {
   const lotById = new Map(state.lots.map(l => [l.id, l]));
   const pend = state.shares.filter(s => s.status === "pending");
   const paid = state.shares.filter(s => s.status === "paid").slice(0, 30);
+  for (const id of [...paySel]) if (!pend.some(s => s.id === id)) paySel.delete(id);
   const owedBy = new Map();
   for (const s of pend) owedBy.set(s.supplier_name, (owedBy.get(s.supplier_name) || 0) + Number(s.payout));
   const line = s => {
     const l = lotById.get(s.lot_id) || {};
-    return `<div class="alert ${s.status}">
+    const pick = s.status === "pending" ? `<label class="pick" title="Select"><input type="checkbox" data-sel="${s.id}" ${paySel.has(s.id) ? "checked" : ""} aria-label="Select this payout"></label>` : "";
+    return `<div class="alert ${s.status}${paySel.has(s.id) ? " picked" : ""}">
+      ${pick}
       <div class="msg"><span class="dot"></span><b>${l.sold_qty ?? "?"} ${esc(l.item_name || "items")}</b> sold out.
         ${s.status === "pending" ? "Pay" : "Paid"} <b>${esc(s.supplier_name)}</b> for ${s.qty} unit${s.qty === 1 ? "" : "s"}:
         <b class="amt">${money(s.payout)}</b>
@@ -692,16 +696,49 @@ function viewAlerts() {
       ${s.status === "pending" ? `<button class="ok small" data-pay="${s.id}" type="button">Mark paid</button>` : `<button class="ghost small" data-unpay="${s.id}" type="button">Undo</button>`}
     </div>`;
   };
+  const sel = pend.filter(s => paySel.has(s.id));
+  const selTotal = sel.reduce((a, s) => a + Number(s.payout), 0);
+  const selBy = new Map(); for (const s of sel) selBy.set(s.supplier_name, (selBy.get(s.supplier_name) || 0) + Number(s.payout));
   shell(`
     <div class="drawers">
       <div class="panel drawer" style="--c:var(--bad)"><h2>Still to pay</h2><div class="big neg">${money(pend.reduce((a, s) => a + Number(s.payout), 0))}</div>
         <div class="sub">${pend.length} pending payout${pend.length === 1 ? "" : "s"}</div></div>
-      ${[...owedBy].map(([n, v]) => `<div class="panel drawer" style="--c:var(--rust)"><h2>${esc(n)}</h2><div class="big">${money(v)}</div><div class="sub">owed</div></div>`).join("")}
+      ${[...owedBy].map(([n, v]) => `<div class="panel drawer" style="--c:var(--rust)"><h2>${esc(n)}</h2><div class="big">${money(v)}</div><div class="sub">owed · <button class="linkbtn" type="button" data-selsup="${esc(n)}">select all</button></div></div>`).join("")}
     </div>
+    ${pend.length ? `<div class="panel paybar ${sel.length ? "active" : ""}">
+      <div class="paysum">
+        <span class="sub">${sel.length ? `${sel.length} SELECTED · SEND` : "SELECT PAYOUTS TO ADD THEM UP"}</span>
+        <div class="big" id="selTotal">${money(selTotal)}</div>
+        <div class="sub">${[...selBy].map(([n, v]) => `${esc(n)}: ${money(v)}`).join(" · ")}</div>
+      </div>
+      <div class="row">
+        <button class="ghost small" type="button" data-selall>${sel.length === pend.length ? "Clear" : "Select all"}</button>
+        <button class="ghost small" type="button" data-copy ${sel.length ? "" : "disabled"}>Copy amount</button>
+        <button class="ok small" type="button" data-paysel ${sel.length ? "" : "disabled"}>Mark selected as paid</button>
+      </div>
+      ${selBy.size > 1 ? `<p class="note">These go to ${selBy.size} different suppliers, so send each one their own amount.</p>` : ""}
+    </div>` : ""}
     <section><h3>Pending</h3><div class="alerts">${pend.length ? pend.map(line).join("") : `<div class="panel empty">Nothing to pay. When a lot with supplier items sells out, it shows up here in red.</div>`}</div></section>
     <section><h3>Paid recently</h3><div class="alerts">${paid.length ? paid.map(line).join("") : `<div class="panel empty">No payouts marked as paid yet.</div>`}</div></section>`);
   $app.querySelectorAll("[data-pay]").forEach(b => b.onclick = () => setPaid(+b.dataset.pay, true));
   $app.querySelectorAll("[data-unpay]").forEach(b => b.onclick = () => setPaid(+b.dataset.unpay, false));
+  $app.querySelectorAll("[data-sel]").forEach(c => c.onchange = () => { c.checked ? paySel.add(+c.dataset.sel) : paySel.delete(+c.dataset.sel); render(); });
+  $app.querySelectorAll("[data-selsup]").forEach(b => b.onclick = () => { for (const s of pend) if (s.supplier_name === b.dataset.selsup) paySel.add(s.id); render(); });
+  const all = $app.querySelector("[data-selall]");
+  if (all) all.onclick = () => { if (sel.length === pend.length) paySel.clear(); else pend.forEach(s => paySel.add(s.id)); render(); };
+  const copy = $app.querySelector("[data-copy]");
+  if (copy) copy.onclick = async () => {
+    const txt = String(Math.round(selTotal));
+    try { await navigator.clipboard.writeText(txt); copy.textContent = "Copied " + money(selTotal); }
+    catch { const r = document.createRange(); r.selectNodeContents(document.getElementById("selTotal")); getSelection().removeAllRanges(); getSelection().addRange(r); copy.textContent = "Selected, press ⌘C"; }
+  };
+  const ps = $app.querySelector("[data-paysel]");
+  if (ps) ps.onclick = async () => {
+    if (ps.dataset.confirm !== "1") { ps.dataset.confirm = "1"; ps.textContent = `Confirm: mark ${sel.length} as paid`; return; }
+    ps.disabled = true;
+    await sb.from("lot_shares").update({ status: "paid", paid_at: new Date().toISOString(), paid_by: session.user.email }).in("id", sel.map(s => s.id));
+    paySel.clear(); await loadAll(); render();
+  };
 }
 async function setPaid(id, paid) {
   await sb.from("lot_shares").update(paid ? { status: "paid", paid_at: new Date().toISOString(), paid_by: session.user.email } : { status: "pending", paid_at: null, paid_by: null }).eq("id", id);

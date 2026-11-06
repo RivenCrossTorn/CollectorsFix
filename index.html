@@ -132,6 +132,14 @@ button.danger{border-color:var(--bad);color:var(--bad)}
 .rrow .t{font:12px var(--f-mono);color:var(--muted)}
 .rrow.off{opacity:.6}
 .rrow.off span{text-decoration:line-through}
+.alert .pick{display:flex;align-items:center;padding-right:2px}
+.alert .pick input{width:18px;height:18px;accent-color:var(--neon);cursor:pointer}
+.alert.picked{outline:2px solid var(--neon);outline-offset:-1px}
+.paybar{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;padding:14px 16px;display:flex;flex-wrap:wrap;gap:12px;justify-content:space-between;align-items:center}
+.paybar.active{border-color:var(--neon);box-shadow:0 0 0 1px var(--neon),0 8px 24px rgba(0,0,0,.4)}
+.paybar .paysum{display:grid;gap:2px;min-width:0}
+.paybar .note{flex-basis:100%;margin:0}
+.linkbtn{background:none;border:0;padding:0;color:var(--neon);font:inherit;text-decoration:underline;cursor:pointer}
 .badge{font:600 12px var(--f-mono);padding:4px 10px;border-radius:3px;text-transform:uppercase;letter-spacing:.08em}
 .badge.good{background:rgba(74,222,128,.15);color:var(--good)} .badge.bad{background:rgba(255,107,107,.15);color:var(--bad)}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
@@ -142,6 +150,6 @@ button.danger{border-color:var(--bad);color:var(--bad)}
   <div class="panel login" id="loading"><p class="status">Loading…</p></div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js"></script>
-<script src="app.js?v=loss1"></script>
+<script src="app.js?v=pay1"></script>
 </body>
 </html>
