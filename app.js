@@ -311,6 +311,32 @@ function computeBatches() {
   return all.sort((x, y) => y.ts - x.ts);
 }
 
+/* Lots closed under the earlier "whole item" rule were already paid. When a shipment lot covers the same item
+   and supplier, and that old lot closed after the shipment arrived, the shipment was settled by that old payout. */
+function oldSettlement(b) {
+  const sharesByLot = new Map(); for (const sh of state.shares) (sharesByLot.get(sh.lot_id) || sharesByLot.set(sh.lot_id, []).get(sh.lot_id)).push(sh);
+  for (const l of state.lots) {
+    if (l.batch_id || l.item_id !== b.item_id || +l.closed_ts < b.ts) continue;
+    const sh = (sharesByLot.get(l.id) || []).find(x => x.status === "paid" && (x.supplier_id === b.sup.id || x.supplier_name === b.sup.name));
+    if (sh) return sh;
+  }
+  return null;
+}
+
+// Mark shipment payouts that duplicate an already-paid old payout as paid.
+async function settleDuplicates() {
+  if (!state.lots.some(l => !l.batch_id)) return 0;
+  const batchByLot = new Map(state.lots.filter(l => l.batch_id).map(l => [l.id, l]));
+  const fixes = [];
+  for (const sh of state.shares.filter(x => x.status === "pending" && batchByLot.has(x.lot_id))) {
+    const l = batchByLot.get(sh.lot_id);
+    const old = oldSettlement({ item_id: l.item_id, ts: +l.opened_ts, sup: { id: sh.supplier_id, name: sh.supplier_name } });
+    if (old) fixes.push({ id: sh.id, paid_at: old.paid_at, paid_by: (old.paid_by || "") + " (paid before the new lot rule)" });
+  }
+  for (const f of fixes) await sb.from("lot_shares").update({ status: "paid", paid_at: f.paid_at, paid_by: f.paid_by }).eq("id", f.id);
+  return fixes.length;
+}
+
 async function closeLots() {
   let n = 0;
   for (const b of computeBatches().filter(x => x.canClose)) {
@@ -319,7 +345,9 @@ async function closeLots() {
     const { data, error } = await sb.from("lots").insert({ item_id: b.item_id, item_name: b.item_name, batch_id: b.id, opened_ts: b.ts, closed_ts: b.lastSale,
       sold_qty: b.sold, revenue: b.revenue, own_qty: 0, cf_keeps: b.revenue - payout }).select().maybeSingle();
     if (error || !data) continue; // already closed by the other person
-    await sb.from("lot_shares").insert({ lot_id: data.id, supplier_id: b.sup.id, supplier_name: b.sup.name, qty: b.sold, rate, gross_share: b.revenue, payout });
+    const old = oldSettlement(b);
+    await sb.from("lot_shares").insert({ lot_id: data.id, supplier_id: b.sup.id, supplier_name: b.sup.name, qty: b.sold, rate, gross_share: b.revenue, payout,
+      ...(old ? { status: "paid", paid_at: old.paid_at, paid_by: (old.paid_by || "") + " (paid before the new lot rule)" } : {}) });
     n++;
   }
   return n;
@@ -1025,7 +1053,7 @@ async function start() {
   recovering = false;
   startedFor = session?.user?.id || null;
   if (!session) return viewLogin();
-  try { await loadAll(); render(); }
+  try { await loadAll(); if (await settleDuplicates()) await loadAll(); render(); }
   catch (e) { $app.innerHTML = `<div class="panel login"><h2>Can't load data</h2><p class="status err">${esc(e.message)}</p></div>`; }
 }
 
