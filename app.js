@@ -900,6 +900,7 @@ function viewSuppliers() {
 
 /* ---------------- Rent ---------------- */
 function viewRent() {
+  const lastRent = [...(state.rentLog || [])].sort((a, b) => new Date(b.paid_at) - new Date(a.paid_at))[0] || null;
   const rent = state.settings.rent || { amount: 12000000, every_days: 3, next_due: null };
   const wallets = state.profiles.reduce((a, p) => a + Number(p.money || 0), 0);
   const stockVal = state.profiles.reduce((a, p) => a + Number(p.stocks_value || 0), 0);
@@ -935,7 +936,10 @@ function viewRent() {
       </div>
       <p class="note">${short === 0 ? "You already have the rent free and clear." : daily > 0 ? `At the last 7 days' pace (${money(daily)}/day net sales) you cover the gap in about ${daysToCover < 1 ? "less than a day" : Math.ceil(daysToCover) + " day" + (Math.ceil(daysToCover) === 1 ? "" : "s")}.` : "No sales in the last 7 days to project from."}
         Cash is the wallet plus stock market holdings of every synced account, minus supplier payouts that are still pending. It updates on every sync.</p>
-      <div class="row"><button class="ok" id="paidRent" type="button" ${due ? "" : "disabled"}>Rent paid · move to next due date</button><span class="status" id="rentStatus"></span></div>
+      <div class="row"><button class="ok" id="paidRent" type="button" ${due ? "" : "disabled"}>Rent paid · move to next due date</button>
+        ${lastRent ? `<button class="ghost" id="undoRent" type="button">Undo last payment</button>` : ""}
+        <span class="status" id="rentStatus"></span></div>
+      ${lastRent ? `<p class="note">Last marked paid: ${new Date(lastRent.paid_at).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })} by ${esc(lastRent.paid_by || "")}${(state.rentLog || []).length > 1 ? ` · ${state.rentLog.length} payments recorded` : ""}</p>` : ""}
     </div>
     <form class="panel pad row" id="rentForm">
       <label for="rAmt">Rent amount<input id="rAmt" type="number" min="0" step="100000" value="${rent.amount}"></label>
@@ -949,11 +953,23 @@ function viewRent() {
     await saveSetting("rent", { amount: +document.getElementById("rAmt").value, every_days: +document.getElementById("rEvery").value, next_due: v ? new Date(v).toISOString() : null });
     render();
   };
-  document.getElementById("paidRent").onclick = async () => {
+  const undo = document.getElementById("undoRent");
+  if (undo) undo.onclick = async () => {
+    if (undo.dataset.confirm !== "1") { undo.dataset.confirm = "1"; undo.textContent = "Click again to undo"; undo.classList.add("danger"); return; }
+    undo.disabled = true;
+    await sb.from("rent_log").delete().eq("id", lastRent.id);
+    if (due) await saveSetting("rent", { ...rent, next_due: new Date(due.getTime() - rent.every_days * 86400000).toISOString() });
+    await loadAll(); render();
+    const st = document.getElementById("rentStatus"); st.textContent = "Last payment undone, due date moved back."; st.className = "status okc";
+  };
+  document.getElementById("paidRent").onclick = async ev => {
+    const btn = ev.currentTarget;
+    if (btn.dataset.confirm !== "1") { btn.dataset.confirm = "1"; btn.textContent = "Confirm: rent paid"; return; }
+    btn.disabled = true;
     await sb.from("rent_log").insert({ amount: rent.amount, paid_by: session.user.email });
     const next = new Date(due.getTime() + rent.every_days * 86400000);
     await saveSetting("rent", { ...rent, next_due: next.toISOString() });
-    render();
+    await loadAll(); render();
     const st = document.getElementById("rentStatus"); st.textContent = "Rent marked as paid."; st.className = "status okc";
   };
 }
