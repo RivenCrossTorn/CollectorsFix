@@ -22,7 +22,7 @@ html,body{margin:0}
 body{background:var(--bg);color:var(--fg);font:15px/1.5 var(--f-body);min-height:100vh;
   background-image:radial-gradient(1200px 400px at 80% -10%,rgba(243,211,59,.07),transparent 60%),radial-gradient(900px 500px at -10% 110%,rgba(194,100,58,.10),transparent 60%)}
 .wrap{max-width:1120px;margin:0 auto;padding-block:24px 60px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:grid;gap:20px}
-header{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px;border-bottom:1px solid var(--line);padding-bottom:14px}
+header{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px;border-bottom:1px solid var(--line);padding-bottom:14px;padding-top:44px}
 h1{font:800 clamp(32px,6vw,52px)/.9 var(--f-display);letter-spacing:.02em;margin:0;text-transform:uppercase;color:var(--neon);text-shadow:0 0 18px rgba(243,211,59,.35)}
 h1 small{display:block;font-size:.36em;color:var(--teal);letter-spacing:.24em;text-shadow:0 0 12px rgba(54,214,195,.4);margin-bottom:6px}
 h2{margin:0;font:800 22px var(--f-display);text-transform:uppercase;letter-spacing:.06em}
@@ -140,6 +140,17 @@ button.danger{border-color:var(--bad);color:var(--bad)}
 .paybar .paysum{display:grid;gap:2px;min-width:0}
 .paybar .note{flex-basis:100%;margin:0}
 .linkbtn{background:none;border:0;padding:0;color:var(--neon);font:inherit;text-decoration:underline;cursor:pointer}
+#syncBadge{position:fixed;z-index:20;top:calc(env(safe-area-inset-top,0px) + 10px);right:max(12px,env(safe-area-inset-right,0px));
+  display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;justify-content:flex-end;max-width:calc(100vw - 24px);
+  padding:7px 12px;border-radius:4px;border:1px solid var(--line);background:rgba(20,17,19,.92);backdrop-filter:blur(6px);
+  font:12px var(--f-mono);color:var(--muted);cursor:default;box-shadow:0 6px 18px rgba(0,0,0,.35)}
+#syncBadge .lbl{font-weight:600;letter-spacing:.12em;color:var(--teal)}
+#syncBadge b{color:var(--fg);font-weight:600}
+#syncBadge.stale{border-color:var(--neon);cursor:pointer;animation:pulse 2s ease-in-out infinite}
+#syncBadge.stale .lbl{color:var(--neon)}
+@media (max-width:640px){header{padding-top:66px}}
+@keyframes pulse{50%{box-shadow:0 0 0 3px rgba(243,211,59,.25),0 6px 18px rgba(0,0,0,.35)}}
+@media (prefers-reduced-motion:reduce){#syncBadge.stale{animation:none}}
 .badge{font:600 12px var(--f-mono);padding:4px 10px;border-radius:3px;text-transform:uppercase;letter-spacing:.08em}
 .badge.good{background:rgba(74,222,128,.15);color:var(--good)} .badge.bad{background:rgba(255,107,107,.15);color:var(--bad)}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
@@ -150,6 +161,6 @@ button.danger{border-color:var(--bad);color:var(--bad)}
   <div class="panel login" id="loading"><p class="status">Loading…</p></div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js"></script>
-<script src="app.js?v=rent3"></script>
+<script src="app.js?v=live1"></script>
 </body>
 </html>

@@ -176,3 +176,8 @@ alter table public.lots drop constraint if exists lots_item_id_closed_ts_key;
 delete from public.lot_shares where status = 'pending' and lot_id in (select id from public.lots where batch_id is null);
 delete from public.lots where batch_id is null and id not in (select lot_id from public.lot_shares);
 notify pgrst, 'reload schema';
+
+-- Added later: live "last sync" badge (Supabase Realtime on profiles)
+do $$ begin
+  alter publication supabase_realtime add table public.profiles;
+exception when duplicate_object then null; end $$;

@@ -366,6 +366,58 @@ async function loadEvents() {
   }
   return { data: out, error: null };
 }
+/* ---------------- Live "last sync" badge ---------------- */
+// Fixed in the top-right corner on every tab. Supabase Realtime pushes profile changes the moment someone syncs;
+// a light check every 30 s covers the case where the live connection drops.
+let loadedAt = 0, liveChannel = null, livePoll = null, badgeTick = null;
+function ago(ts) {
+  const m = Math.floor((Date.now() / 1000 - ts) / 60);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m} min ago`;
+  const h = Math.floor(m / 60);
+  return h < 24 ? `${h} h ${m % 60} min ago` : `${Math.floor(h / 24)} d ago`;
+}
+function renderSyncBadge() {
+  let el = document.getElementById("syncBadge");
+  if (!session) { if (el) el.remove(); return; }
+  if (!el) { el = document.createElement("button"); el.id = "syncBadge"; el.type = "button"; document.body.appendChild(el);
+    el.onclick = async () => { if (!el.classList.contains("stale")) return; el.disabled = true; await loadAll(); render(); el.disabled = false; renderSyncBadge(); }; }
+  const last = [...state.profiles].sort((a, b) => (Number(b.synced_ts) || 0) - (Number(a.synced_ts) || 0))[0];
+  if (!last || !Number(last.synced_ts)) { el.className = ""; el.innerHTML = `<span class="lbl">LAST SYNC</span><b>nobody yet</b>`; return; }
+  const ts = Number(last.synced_ts);
+  const stale = ts > loadedAt + 2;
+  const time = new Date(ts * 1000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  const day = new Date(ts * 1000).toDateString() === new Date().toDateString() ? "" : new Date(ts * 1000).toLocaleDateString("en-GB", { day: "2-digit", month: "short" }) + " ";
+  el.className = stale ? "stale" : "";
+  el.title = stale ? "New data since you opened this page. Click to load it." : "Last sync of any account";
+  el.innerHTML = `<span class="lbl">${stale ? "NEW DATA · CLICK TO LOAD" : "LAST SYNC"}</span><b>${esc(last.torn_name || last.email || "?")}</b> <span>${day}${time} · ${ago(ts)}</span>`;
+}
+function startLive() {
+  if (liveChannel || !session) return;
+  const apply = row => {
+    if (!row || !row.user_id) return;
+    const i = state.profiles.findIndex(p => p.user_id === row.user_id);
+    if (i >= 0) state.profiles[i] = { ...state.profiles[i], ...row }; else state.profiles.push(row);
+    renderSyncBadge();
+  };
+  try {
+    liveChannel = sb.channel("cf-profiles")
+      .on("postgres_changes", { event: "*", schema: "public", table: "profiles" }, payload => apply(payload.new))
+      .subscribe();
+  } catch (e) { console.warn("realtime", e); }
+  livePoll = setInterval(async () => {
+    if (document.hidden) return;
+    const { data } = await sb.from("profiles").select("user_id,email,torn_id,torn_name,synced_ts");
+    (data || []).forEach(apply);
+  }, 30000);
+  badgeTick = setInterval(renderSyncBadge, 30000);
+}
+function stopLive() {
+  if (liveChannel) { sb.removeChannel(liveChannel); liveChannel = null; }
+  clearInterval(livePoll); clearInterval(badgeTick); livePoll = badgeTick = null;
+  renderSyncBadge();
+}
+
 async function loadAll() {
   const trackStart = 0;
   const [sup, lots, shares, profiles, stock, events, settings, manual, rentLog, overrides] = await Promise.all([
@@ -384,6 +436,8 @@ async function loadAll() {
   state.manual = manual.error ? null : manual.data;   // null = table not created yet
   state.rentLog = rentLog.error ? [] : rentLog.data;
   state.overrides = overrides.error ? null : overrides.data;   // null = table not created yet
+  loadedAt = Math.max(nowTs(), ...state.profiles.map(p => Number(p.synced_ts) || 0));
+  setTimeout(renderSyncBadge, 0);
   if (err) throw new Error(err.error.message + " — did you run setup.sql in Supabase?");
   state.suppliers = sup.data; state.lots = lots.data; state.shares = shares.data; state.profiles = profiles.data;
   state.stock = stock.data; state.events = events.data;
@@ -1066,10 +1120,11 @@ function viewNewPassword() {
 
 let recovering = false, startedFor = null;
 async function start() {
+  if (!session) stopLive();
   recovering = false;
   startedFor = session?.user?.id || null;
   if (!session) return viewLogin();
-  try { await loadAll(); if (await settleDuplicates()) await loadAll(); render(); }
+  try { await loadAll(); if (await settleDuplicates()) await loadAll(); render(); startLive(); }
   catch (e) { $app.innerHTML = `<div class="panel login"><h2>Can't load data</h2><p class="status err">${esc(e.message)}</p></div>`; }
 }
 
